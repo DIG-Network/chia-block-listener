@@ -1,0 +1,48 @@
+-- =============================================================================
+-- Migration 008: CAT Functions (SQLite)
+-- =============================================================================
+-- Note: SQLite doesn't support stored procedures like PostgreSQL's PL/pgSQL.
+-- The function logic will need to be implemented in the application layer.
+-- This migration documents the functions that need to be implemented.
+
+-- =============================================================================
+-- CAT Functions Documentation
+-- =============================================================================
+-- The following functions from the PostgreSQL version need to be implemented
+-- in the application layer since SQLite doesn't support stored procedures:
+--
+-- 1. refresh_cat_balances() -> BOOLEAN
+--    - Rebuilds the cat_balances table from current cats data
+--
+-- 2. get_cat_balances_by_owner(target_puzzle_hash, page, page_size) -> TABLE
+--    - Returns CAT balances for specific owner with pagination
+--    - Columns: asset_id, symbol, asset_name, owner_puzzle_hash_hex, 
+--               coin_count, total_amount, total_balance, min_coin_amount,
+--               max_coin_amount, avg_coin_amount, last_activity_block, decimals
+--
+-- 3. get_cat_balance_by_asset_and_owner(target_asset_id, target_puzzle_hash) -> TABLE
+--    - Returns CAT balance for specific asset and owner
+--    - Same columns as above
+--
+-- 4. get_cat_holders_by_asset(target_asset_id, page, page_size) -> TABLE
+--    - Returns top holders for specific CAT asset with pagination
+--    - Columns: owner_puzzle_hash_hex, coin_count, total_amount, total_balance,
+--               min_coin_amount, max_coin_amount, avg_coin_amount, last_activity_block
+--
+-- 5. get_cat_asset_summary(page, page_size) -> TABLE
+--    - Returns summary of all CAT assets with pagination
+--    - Columns: asset_id, symbol, asset_name, holder_count, total_circulating_supply,
+--               total_circulating_balance, top_holder_amount, avg_holder_balance, decimals
+--
+-- 6. get_cat_asset_by_id(target_asset_id) -> TABLE
+--    - Returns CAT asset information by asset ID
+--    - Columns: asset_id, symbol, name, description, total_supply, decimals,
+--               metadata_json, first_seen_block, created_at
+--
+-- 7. get_cats_by_owner_puzzle_hash(target_owner_puzzle_hash, target_asset_id, page, page_size) -> TABLE
+--    - Returns CATs by owner puzzle hash and asset ID with pagination
+--    - Columns: coin_id, asset_id, asset_name, asset_symbol, amount,
+--               inner_puzzle_hash_hex, created_block, is_spent
+--
+-- These functions will be implemented as methods on the ChiaBlockDatabase class
+-- to provide the same functionality as the PostgreSQL stored procedures. 

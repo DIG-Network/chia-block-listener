@@ -2,45 +2,71 @@
 name = "chia-block-listener"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-# NAPI-rs for Node.js bindings
-napi = { version = "2", features = ["napi9", "tokio_rt", "async"] }
-napi-derive = "2"
+# New crate dependencies
+chia-peer-pool = { path = "./crate/chia-peer-pool" }
+chia-block-listener = { path = "./crate/chia-block-listener" }
+chia-block-database = { path = "./crate/chia-block-database" }
+chia-full-indexer = { path = "./crate/chia-full-indexer" }
+dns-discovery = { path = "./crate/dns-discovery" }
+chia-generator-parser = { path = "./crate/chia-generator-parser" }
+chia-graphql = { path = "./crate/chia-graphql" }
+chia-peer-tls = { path = "./crate/chia-peer-tls" }
+
+# Core Chia protocol
+chia-protocol = "0.26.0"
+chia-traits = "0.26.0"
+
+# NAPI bindings
+napi = { version = "2.16", default-features = false, features = ["napi4", "tokio_rt", "serde-json"] }
+napi-derive = "2.16"
+napi-build = "2.1"
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 futures-util = "0.3"
 
-# Chia-related dependencies
-chia-protocol = "0.26"
-chia-traits = "0.26"
-chia-ssl = "0.26"
-
-# Networking
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-native-tls = { version = "0.2", features = ["vendored"] }
+# TLS and networking
+native-tls = "0.2"
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
-# Utilities
-thiserror = "1"
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-sha2 = "0.10"
-dirs = "5"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# Local crates
-chia-generator-parser = { path = "./crate/chia-generator-parser" }
-dns-discovery = { path = "./crate/dns-discovery" }
+# Cryptography
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+
+# Math
+bigdecimal = "0.4"
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "sqlite", "chrono", "uuid", "json"] }
 
 [build-dependencies]
-napi-build = "2"
+napi-build = "2.1"
 
 [profile.release]
 lto = true

@@ -310,8 +310,15 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { DnsDiscoveryClient, getEventTypes, ChiaBlockListener, ChiaPeerPool, initTracing } = nativeBinding
+const { ChiaBlockParser, DatabaseType, BlockchainNamespace, AnalyticsNamespace, AssetsNamespace, SystemNamespace, ChiaBlockDatabase, DnsDiscoveryClient, getEventTypes, ChiaBlockListener, ChiaPeerPool, initTracing } = nativeBinding
 
+module.exports.ChiaBlockParser = ChiaBlockParser
+module.exports.DatabaseType = DatabaseType
+module.exports.BlockchainNamespace = BlockchainNamespace
+module.exports.AnalyticsNamespace = AnalyticsNamespace
+module.exports.AssetsNamespace = AssetsNamespace
+module.exports.SystemNamespace = SystemNamespace
+module.exports.ChiaBlockDatabase = ChiaBlockDatabase
 module.exports.DnsDiscoveryClient = DnsDiscoveryClient
 module.exports.getEventTypes = getEventTypes
 module.exports.ChiaBlockListener = ChiaBlockListener

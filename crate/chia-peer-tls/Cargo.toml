@@ -1,0 +1,31 @@
+[package]
+name = "chia-peer-tls"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared TLS and peer connection functionality for Chia blockchain clients"
+
+[dependencies]
+# TLS and networking
+native-tls = "0.2"
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Cryptography
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] } 

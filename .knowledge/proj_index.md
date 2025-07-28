@@ -1,58 +1,58 @@
 # Project Architecture Index
 
-## Module Structure
+## Module Hierarchy
 
-### Core Components
-- `src/event_emitter.rs` - Main NAPI interface and event system
-  - ChiaBlockListener class
-  - Event handling (on/off methods)
-  - Peer management (addPeer, disconnectPeer, etc.)
-  - Block retrieval APIs
+### Root Crates
+- `chia-block-listener/` - Main NAPI module for Node.js
+- `crate/chia-generator-parser/` - Block parsing utilities
+- `crate/chia-block-database/` - Database storage and write operations
+- `crate/chia-graphql/` - GraphQL API for blockchain exploration
 
-- `src/peer.rs` - WebSocket peer connection management
-  - Connection handling
-  - Block listening
-  - Handshake protocol
+### chia-block-listener (Main Module)
+- `src/lib.rs` - NAPI module exports
+- `src/peer.rs` - WebSocket peer connection logic
+- `src/event_emitter.rs` - Event system for JS integration
+- `src/error.rs` - Error types
+- `src/protocol.rs` - Chia protocol message handling
+- `src/tls.rs` - TLS certificate handling
 
-- `src/protocol.rs` - Chia protocol implementation
-  - Message types
-  - Handshake structures
+### chia-generator-parser
+- `src/lib.rs` - Block parsing exports
+- `src/error.rs` - Parser error types
+- Direct integration with chia-protocol types
 
-### Parser Module (`crate/chia-generator-parser/`)
-- `src/parser.rs` - Block parsing with CLVM execution
-  - Uses chia-consensus for generator execution
-  - Extracts coin spends with puzzle reveals/solutions
-  - Handles CREATE_COIN conditions
+### chia-block-database
+- `src/lib.rs` - Database exports
+- `src/database.rs` - Core database operations
+- `src/functions/` - Database query functions (being migrated to GraphQL)
+- `src/namespaces/` - Function organization
+- `migrations/` - Database schema migrations
 
-### TypeScript Integration
-- `index.d.ts` - Auto-generated TypeScript definitions
-  - Enhanced with typed event overloads via post-build script
-  - Full IntelliSense support for event handlers
-
-- `scripts/post-build.js` - Adds typed event method overloads
-  - Runs automatically after build
-  - Provides type-safe event handling
+### chia-graphql
+- `src/lib.rs` - GraphQL API exports
+- `src/schema/` - GraphQL schema definitions
+  - `query.rs` - Root query object
+  - `types/` - GraphQL type definitions
+- `src/resolvers/` - Query implementations
+  - `core.rs` - Basic blockchain queries (✅ Complete)
+  - `addresses.rs` - Address analytics (✅ Complete)
+  - Others - (⏳ In progress)
+- `src/database.rs` - Database configuration
+- `src/error.rs` - GraphQL error handling
 
 ## Key Interfaces
 
-### Events
-- `BlockReceivedEvent` - Contains peerId + all block data
-- `PeerConnectedEvent` - peerId, host, port
-- `PeerDisconnectedEvent` - peerId, host, port, optional message
+### NAPI Bindings
+- `EventEmitter` - JS event interface
+- Block event types (PeerConnected, BlockReceived, etc.)
 
-### Data Types  
-- `BlockReceivedEvent` - Used everywhere for consistency (includes peerId)
-- `CoinRecord` - Parent info, puzzle hash, amount
-- `CoinSpend` - Full spend with puzzle reveal and solution
+### GraphQL API
+- `ChiaGraphql` - Main GraphQL instance
+- Query namespaces: core, addresses, balances, cats, nfts, etc.
+- Support for both PostgreSQL and SQLite
 
-## Event System
-```typescript
-// Typed event handlers
-listener.on('blockReceived', (event: BlockReceivedEvent) => { });
-listener.on('peerConnected', (event: PeerConnectedEvent) => { });
-listener.on('peerDisconnected', (event: PeerDisconnectedEvent) => { });
-```
-
-## Peer Identification
-- Peer IDs are now `"IP:port"` strings (e.g., `"192.168.1.100:8444"`)
-- Makes peer identification clearer in logs and events 
+## Dependencies Between Modules
+- `chia-block-listener` → `chia-generator-parser` (block parsing)
+- `chia-block-listener` → `chia-block-database` (data storage)
+- `chia-graphql` → Database (read queries)
+- All → `chia-protocol` types 

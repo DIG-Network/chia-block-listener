@@ -1,0 +1,40 @@
+-- =============================================================================
+-- Migration 010: NFT Ownership History Functions (SQLite)
+-- =============================================================================
+-- Note: SQLite doesn't support stored procedures like PostgreSQL's PL/pgSQL.
+-- The function logic will need to be implemented in the application layer.
+-- This migration documents the functions that need to be implemented.
+
+-- =============================================================================
+-- NFT Ownership History Functions Documentation
+-- =============================================================================
+-- The following functions from the PostgreSQL version need to be implemented
+-- in the application layer since SQLite doesn't support stored procedures:
+--
+-- 1. get_nft_ownership_history(target_launcher_id, page, page_size) -> TABLE
+--    - Returns complete ownership history for an NFT with pagination
+--    - Columns: id, launcher_id, coin_id, collection_id, previous_owner_puzzle_hash_hex,
+--               new_owner_puzzle_hash_hex, previous_owner, new_owner, transfer_type,
+--               block_height, block_timestamp, spend_coin_id, created_at
+--
+-- 2. get_nft_history_by_owner(target_owner_puzzle_hash, page, page_size) -> TABLE
+--    - Returns all NFTs owned by a specific address at any point in history with pagination
+--    - Columns: launcher_id, coin_id, collection_id, transfer_type, block_height,
+--               block_timestamp, was_previous_owner, was_new_owner
+--
+-- 3. get_nft_owner_at_block(target_launcher_id, target_block_height) -> TABLE
+--    - Returns who owned an NFT at a specific block height
+--    - Columns: owner_puzzle_hash_hex, current_owner, block_height, transfer_type
+--
+-- 4. get_nft_transfers_in_block_range(start_block, end_block, page, page_size) -> TABLE
+--    - Returns all NFT transfers within a block range with pagination
+--    - Columns: launcher_id, coin_id, collection_id, previous_owner_puzzle_hash_hex,
+--               new_owner_puzzle_hash_hex, transfer_type, block_height, block_timestamp
+--
+-- These functions will be implemented as methods on the ChiaBlockDatabase class
+-- to provide the same functionality as the PostgreSQL stored procedures.
+--
+-- The application layer will need to handle:
+-- - Converting BLOB puzzle hashes to hex strings
+-- - Pagination logic with LIMIT and OFFSET
+-- - Complex JOINs and filtering logic 

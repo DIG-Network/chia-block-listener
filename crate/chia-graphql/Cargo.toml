@@ -1,0 +1,39 @@
+[package]
+name = "chia-graphql"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# GraphQL dependencies
+async-graphql = { version = "7.0", features = ["dataloader", "chrono"] }
+async-graphql-axum = "7.0"
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+
+# Database dependencies
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "sqlite", "chrono"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Configuration
+dotenv = "0.15"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[example]]
+name = "server"
+required-features = [] 

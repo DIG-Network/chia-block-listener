@@ -1,0 +1,35 @@
+-- =============================================================================
+-- Migration 009: NFT Functions (SQLite)
+-- =============================================================================
+-- Note: SQLite doesn't support stored procedures like PostgreSQL's PL/pgSQL.
+-- The function logic will need to be implemented in the application layer.
+-- This migration documents the functions that need to be implemented.
+
+-- =============================================================================
+-- NFT Functions Documentation
+-- =============================================================================
+-- The following functions from the PostgreSQL version need to be implemented
+-- in the application layer since SQLite doesn't support stored procedures:
+--
+-- 1. get_nfts_by_owner_puzzle_hash(target_owner_puzzle_hash, target_collection_id, page, page_size) -> TABLE
+--    - Returns NFTs by owner puzzle hash with optional collection filter and pagination
+--    - Columns: coin_id, launcher_id, collection_id, collection_name, edition_number,
+--               edition_total, data_uris, metadata_uris, royalty_basis_points,
+--               created_block, is_spent
+--
+-- 2. get_nfts_by_collection_id(target_collection_id, page, page_size) -> TABLE
+--    - Returns NFTs by collection ID with pagination
+--    - Columns: coin_id, launcher_id, owner_puzzle_hash_hex, current_owner,
+--               edition_number, edition_total, data_uris, metadata_uris,
+--               royalty_basis_points, created_block, is_spent
+--
+-- 3. get_nft_collection_by_id(target_collection_id) -> TABLE
+--    - Returns NFT collection information by collection ID
+--    - Columns: collection_id, name, description, total_supply, creator_puzzle_hash,
+--               metadata_json, first_seen_block, created_at
+--
+-- These functions will be implemented as methods on the ChiaBlockDatabase class
+-- to provide the same functionality as the PostgreSQL stored procedures.
+--
+-- Note: Array fields (data_uris, metadata_uris) will be stored as JSON strings
+-- and parsed by the application layer when needed. 
