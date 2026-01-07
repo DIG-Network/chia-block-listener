@@ -1,5 +1,9 @@
-use crate::event_emitter::{BlockReceivedEvent, PeerConnectedEvent, PeerDisconnectedEvent};
-use crate::peer_pool::{ChiaPeerPool as InternalPeerPool, NewPeakHeightEvent};
+use chia_block_listener::peer_pool::ChiaPeerPool as InternalPeerPool;
+use chia_block_listener::types::{
+    BlockReceivedEvent as CoreBlockReceivedEvent, NewPeakHeightEvent, PeerConnectedEvent,
+    PeerDisconnectedEvent,
+};
+use crate::event_emitter::BlockReceivedEvent;
 use napi::bindgen_prelude::*;
 use napi::{
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -84,10 +88,13 @@ impl ChiaPeerPool {
 
     #[napi(js_name = "getBlockByHeight")]
     pub async fn get_block_by_height(&self, height: u32) -> Result<BlockReceivedEvent> {
-        self.pool
+        let core_block: CoreBlockReceivedEvent = self
+            .pool
             .get_block_by_height(height as u64)
             .await
-            .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to get block: {e}")))
+            .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to get block: {e}")))?;
+
+        Ok(convert_core_block_to_js(core_block))
     }
 
     #[napi(js_name = "removePeer")]
@@ -217,5 +224,58 @@ impl ChiaPeerPool {
 impl Default for ChiaPeerPool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn convert_core_block_to_js(core: CoreBlockReceivedEvent) -> BlockReceivedEvent {
+    BlockReceivedEvent {
+        peer_id: core.peer_id,
+        height: core.height,
+        weight: core.weight,
+        header_hash: core.header_hash,
+        timestamp: core.timestamp,
+        coin_additions: core
+            .coin_additions
+            .into_iter()
+            .map(|c| crate::event_emitter::CoinRecord {
+                parent_coin_info: c.parent_coin_info,
+                puzzle_hash: c.puzzle_hash,
+                amount: c.amount,
+            })
+            .collect(),
+        coin_removals: core
+            .coin_removals
+            .into_iter()
+            .map(|c| crate::event_emitter::CoinRecord {
+                parent_coin_info: c.parent_coin_info,
+                puzzle_hash: c.puzzle_hash,
+                amount: c.amount,
+            })
+            .collect(),
+        coin_spends: core
+            .coin_spends
+            .into_iter()
+            .map(|s| crate::event_emitter::CoinSpend {
+                coin: crate::event_emitter::CoinRecord {
+                    parent_coin_info: s.coin.parent_coin_info,
+                    puzzle_hash: s.coin.puzzle_hash,
+                    amount: s.coin.amount,
+                },
+                puzzle_reveal: s.puzzle_reveal,
+                solution: s.solution,
+                offset: s.offset,
+            })
+            .collect(),
+        coin_creations: core
+            .coin_creations
+            .into_iter()
+            .map(|c| crate::event_emitter::CoinRecord {
+                parent_coin_info: c.parent_coin_info,
+                puzzle_hash: c.puzzle_hash,
+                amount: c.amount,
+            })
+            .collect(),
+        has_transactions_generator: core.has_transactions_generator,
+        generator_size: core.generator_size,
     }
 }

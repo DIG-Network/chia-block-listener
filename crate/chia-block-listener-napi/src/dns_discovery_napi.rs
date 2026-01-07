@@ -198,30 +198,25 @@ impl DnsDiscoveryClient {
     pub async fn resolve_both(&self, hostname: String, port: u16) -> Result<DiscoveryResultJS> {
         debug!("Resolving both IPv4 and IPv6 addresses for {}", hostname);
 
-        self.discovery
-            .resolve_both(&hostname, port)
+        let ipv4 = self
+            .discovery
+            .resolve_ipv4(&hostname)
             .await
-            .map(|result| DiscoveryResultJS::from(&result))
-            .map_err(|e| {
-                let error_info = DnsDiscoveryErrorInfo::from(e);
-                Error::new(Status::GenericFailure, error_info.message)
-            })
-    }
-}
+            .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+        let ipv6 = self
+            .discovery
+            .resolve_ipv6(&hostname)
+            .await
+            .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
 
-impl Default for DnsDiscoveryClient {
-    fn default() -> Self {
-        Self::new().unwrap()
-    }
-}
+        let mut result = DiscoveryResult::new();
+        for addr in ipv4 {
+            result.add_ipv4(addr, port);
+        }
+        for addr in ipv6 {
+            result.add_ipv6(addr, port);
+        }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_client_creation() {
-        let client = DnsDiscoveryClient::new();
-        assert!(client.is_ok());
+        Ok((&result).into())
     }
 }

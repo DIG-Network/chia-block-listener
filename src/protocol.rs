@@ -1,4 +1,5 @@
 use chia_protocol::{Bytes32, ProtocolMessageTypes};
+use chia_traits::Streamable;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -78,7 +79,8 @@ impl Message {
             return Err(Error::new(ErrorKind::InvalidData, "Message too short"));
         }
 
-        let msg_type = bytes[0];
+        let mut msg_type_bytes_parse_cursor = std::io::Cursor::new(&bytes[0..1]);
+        let msg_type = ProtocolMessageTypes::parse::<false>(&mut msg_type_bytes_parse_cursor).map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to parse message type"))?;
         let has_id = bytes[1] != 0;
 
         let (id, data_start) = if has_id {
@@ -105,7 +107,7 @@ impl Message {
         }
 
         Ok(Self {
-            msg_type: unsafe { std::mem::transmute::<u8, ProtocolMessageTypes>(msg_type) },
+            msg_type,
             id,
             data,
         })

@@ -1,5 +1,5 @@
-use crate::error::ChiaError;
-use crate::peer::PeerConnection;
+use chia_block_listener::error::ChiaError;
+use chia_block_listener::peer::PeerConnection;
 use chia_generator_parser::{types::ParsedBlock, BlockParser};
 
 use napi::{

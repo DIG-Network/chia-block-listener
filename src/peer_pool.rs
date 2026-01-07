@@ -1,12 +1,12 @@
 use crate::error::ChiaError;
-use crate::event_emitter::{
-    BlockReceivedEvent, CoinRecord, CoinSpend, PeerConnectedEvent, PeerDisconnectedEvent,
+use crate::types::{
+    BlockReceivedEvent, CoinRecord, CoinSpend, NewPeakHeightEvent, PeerConnectedEvent,
+    PeerDisconnectedEvent,
 };
 use crate::peer::PeerConnection;
 use chia_generator_parser::{BlockParser, ParsedBlock};
 use chia_protocol::FullBlock;
 
-use napi_derive::napi;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,17 +23,9 @@ const CONNECTION_TIMEOUT_MS: u64 = 3000; // 3 second timeout for connections (re
 pub type PeerConnectedCallback = Box<dyn Fn(PeerConnectedEvent) + Send + Sync + 'static>;
 pub type PeerDisconnectedCallback = Box<dyn Fn(PeerDisconnectedEvent) + Send + Sync + 'static>;
 pub type NewPeakHeightCallback = Box<dyn Fn(NewPeakHeightEvent) + Send + Sync + 'static>;
+pub type BlockReceivedCallback = Box<dyn Fn(BlockReceivedEvent) + Send + Sync + 'static>;
 
-#[derive(Debug, Clone)]
-#[napi(object)]
-pub struct NewPeakHeightEvent {
-    #[napi(js_name = "oldPeak")]
-    pub old_peak: Option<u32>,
-    #[napi(js_name = "newPeak")]
-    pub new_peak: u32,
-    #[napi(js_name = "peerId")]
-    pub peer_id: String,
-}
+// Rust-native events and types are defined in crate::types and used throughout this module.
 
 struct PeerWorkerParams {
     peer_connection: PeerConnection,
@@ -51,6 +43,7 @@ pub struct ChiaPeerPool {
     connected_callback: Arc<RwLock<Option<PeerConnectedCallback>>>,
     disconnected_callback: Arc<RwLock<Option<PeerDisconnectedCallback>>>,
     new_peak_callback: Arc<RwLock<Option<NewPeakHeightCallback>>>,
+    block_received_callback: Arc<RwLock<Option<BlockReceivedCallback>>>,
 }
 
 struct ChiaPeerPoolInner {
@@ -104,6 +97,7 @@ impl ChiaPeerPool {
             connected_callback: Arc::new(RwLock::new(None)),
             disconnected_callback: Arc::new(RwLock::new(None)),
             new_peak_callback: Arc::new(RwLock::new(None)),
+            block_received_callback: Arc::new(RwLock::new(None)),
         };
 
         // Start the request processor
@@ -123,6 +117,13 @@ impl ChiaPeerPool {
             *self.connected_callback.write().await = Some(connected_callback);
             *self.disconnected_callback.write().await = Some(disconnected_callback);
             *self.new_peak_callback.write().await = Some(new_peak_callback);
+        });
+    }
+
+    pub fn set_block_received_callback(&self, callback: BlockReceivedCallback) {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            *self.block_received_callback.write().await = Some(callback);
         });
     }
 
@@ -404,6 +405,7 @@ impl ChiaPeerPool {
 
     fn start_request_processor(&self, mut receiver: mpsc::Receiver<PoolRequest>) {
         let inner = self.inner.clone();
+        let block_cb_arc = self.block_received_callback.clone();
 
         tokio::spawn(async move {
             let mut request_queue: VecDeque<PoolRequest> = VecDeque::new();
@@ -503,6 +505,7 @@ impl ChiaPeerPool {
 
                                                                         // Process response asynchronously for maximum throughput
                                                                         let peer_id_clone = peer_id.clone();
+                                                                        let block_cb_arc2 = block_cb_arc.clone();
                                                                         tokio::spawn(async move {
                                                                             match worker_response_rx.await {
                                                                                 Ok(Ok(full_block)) => {
@@ -514,6 +517,10 @@ impl ChiaPeerPool {
                                                                                                 &parsed_block,
                                                                                                 peer_id_clone,
                                                                                             );
+                                                                                            // Fire block-received callback to subscribers if present
+                                                                                            if let Some(cb) = &*block_cb_arc2.read().await {
+                                                                                                cb(block_event.clone());
+                                                                                            }
                                                                                             let _ = response_tx.send(Ok(block_event));
                                                                                         }
                                                                                         Err(e) => {
