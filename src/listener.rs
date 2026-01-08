@@ -2,46 +2,49 @@ use crate::error::ChiaError;
 use crate::peer_pool::ChiaPeerPool;
 use crate::types::{Event, ListenerConfig};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use std::sync::Mutex;
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 pub struct Listener {
     pool: Arc<ChiaPeerPool>,
     tx: broadcast::Sender<Event>,
+    cancel: CancellationToken,
+    dispatcher: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Listener {
     pub fn new(config: ListenerConfig) -> Result<Self, ChiaError> {
         let (tx, _rx) = broadcast::channel(config.buffer);
-        let pool = Arc::new(ChiaPeerPool::new());
 
-        // Wire peer-connected/disconnected/new-peak from pool into broadcast channel
-        {
-            let tx_connected = tx.clone();
-            let tx_disconnected = tx.clone();
-            let tx_new_peak = tx.clone();
+        // Internal event sink between pool -> listener dispatcher
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Event>(config.buffer);
+        let cancel = CancellationToken::new();
 
-            pool.set_event_callbacks(
-                Box::new(move |ev| {
-                    let _ = tx_connected.send(Event::PeerConnected(ev));
-                }),
-                Box::new(move |ev| {
-                    let _ = tx_disconnected.send(Event::PeerDisconnected(ev));
-                }),
-                Box::new(move |ev| {
-                    let _ = tx_new_peak.send(Event::NewPeakHeight(ev));
-                }),
-            );
-        }
+        // Pool constructed with event sink and shared cancellation
+        let pool = Arc::new(ChiaPeerPool::new_with_event_sink(sink_tx, cancel.clone()));
 
-        // Wire block-received callback into broadcast channel (for historical pulls)
-        {
-            let tx_block = tx.clone();
-            pool.set_block_received_callback(Box::new(move |blk| {
-                let _ = tx_block.send(Event::BlockReceived(blk));
-            }));
-        }
+        // Dispatcher: forwards from sink to broadcast without blocking pool
+        let tx_clone = tx.clone();
+        let cancel_clone = cancel.clone();
+        let dispatcher = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel_clone.cancelled() => {
+                        break;
+                    }
+                    maybe = sink_rx.recv() => {
+                        match maybe {
+                            Some(ev) => { let _ = tx_clone.send(ev); }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
 
-        Ok(Self { pool, tx })
+        Ok(Self { pool, tx, cancel, dispatcher: Mutex::new(Some(dispatcher)) })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -54,14 +57,23 @@ impl Listener {
         port: u16,
         network_id: String,
     ) -> Result<String, ChiaError> {
+        if self.cancel.is_cancelled() {
+            return Err(ChiaError::Other("shutting down".into()));
+        }
         self.pool.add_peer(host, port, network_id).await
     }
 
     pub async fn remove_peer(&self, peer_id: String) -> Result<bool, ChiaError> {
+        if self.cancel.is_cancelled() {
+            return Err(ChiaError::Other("shutting down".into()));
+        }
         self.pool.remove_peer(peer_id).await
     }
 
     pub async fn get_connected_peers(&self) -> Result<Vec<String>, ChiaError> {
+        if self.cancel.is_cancelled() {
+            return Err(ChiaError::Other("shutting down".into()));
+        }
         self.pool.get_connected_peers().await
     }
 
@@ -73,15 +85,37 @@ impl Listener {
         &self,
         height: u64,
     ) -> Result<crate::types::BlockReceivedEvent, ChiaError> {
+        if self.cancel.is_cancelled() {
+            return Err(ChiaError::Other("shutting down".into()));
+        }
         self.pool.get_block_by_height(height).await
     }
 
-    // Structured shutdown: currently both methods await completion
+    // Structured shutdown
     pub async fn shutdown(&self) -> Result<(), ChiaError> {
+        // Signal cancellation quickly and initiate pool shutdown
+        self.cancel.cancel();
         self.pool.shutdown().await
     }
 
     pub async fn shutdown_and_wait(&self) -> Result<(), ChiaError> {
-        self.pool.shutdown().await
+        // First signal shutdown
+        self.shutdown().await?;
+
+        // Take and await dispatcher task cooperatively (no abort)
+        if let Some(handle) = self.dispatcher.lock().ok().and_then(|mut g| g.take()) {
+            let _ = handle.await;
+        }
+
+        // Await pool tasks
+        self.pool.shutdown_and_wait().await
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        // Ensure background tasks are signalled to stop if user drops without explicit shutdown
+        self.cancel.cancel();
+        // Do not await here; Drop must be non-blocking.
     }
 }

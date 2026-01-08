@@ -68,6 +68,86 @@ process.on('SIGINT', () => {
   process.exit(0)
 })
 ```
+
+## Rust usage (canonical, Rust-first interface)
+
+This repository now provides a pure Rust API suitable for use in Tokio-based applications, while the N-API adapter remains a thin layer for Node.js.
+
+Key points of the Rust API:
+- Your application owns the policy/event loop. The library only manages networking, peers, and event emission.
+- Subscribe to events via a bounded broadcast channel. Delivery is best-effort; slow consumers may miss messages, which is appropriate for catch-up/skip logic.
+- Structured shutdown: signal cancellation quickly and optionally wait for all internal tasks to complete.
+
+Example:
+
+```rust
+use chia_block_listener::{init_tracing, Listener, ListenerConfig};
+use chia_block_listener::types::Event;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Optional: enable logging
+    init_tracing();
+
+    // Configure and create the listener (buffer defaults to 1024)
+    let listener = Listener::new(ListenerConfig::default())?;
+
+    // Subscribe to events (bounded, best-effort delivery)
+    let rx = listener.subscribe();
+    let mut events = BroadcastStream::new(rx);
+
+    // Connect a peer
+    let _peer_id = listener.add_peer("localhost".into(), 8444, "mainnet".into()).await?;
+
+    // Application-owned policy loop: read events and act
+    let policy = tokio::spawn(async move {
+        while let Some(item) = events.next().await {
+            match item {
+                Ok(Event::PeerConnected(e)) => {
+                    println!("connected: {} ({}:{})", e.peer_id, e.host, e.port);
+                }
+                Ok(Event::PeerDisconnected(e)) => {
+                    println!("disconnected: {} reason={:?}", e.peer_id, e.message);
+                }
+                Ok(Event::NewPeakHeight(e)) => {
+                    println!("new peak: old={:?} new={} from {}", e.old_peak, e.new_peak, e.peer_id);
+                }
+                Ok(Event::BlockReceived(b)) => {
+                    println!("block {} {}", b.height, b.header_hash);
+                }
+                Err(_lagged) => {
+                    // One or more messages were missed (slow consumer). Best-effort model: recompute current state if needed.
+                    // For catch-up use cases, you generally only need latest peak or most recent block.
+                }
+            }
+        }
+    });
+
+    // Shutdown example (e.g., on SIGINT/SIGTERM):
+    // Signal fast
+    listener.shutdown().await?;
+    // Wait for all internal tasks to end deterministically
+    listener.shutdown_and_wait().await?;
+
+    policy.await?;
+    Ok(())
+}
+```
+
+### Backpressure and delivery guarantees
+- The core guarantees that parsed blocks are submitted into the internal event pipeline (no pre-broadcast drop). Blocks are enqueued with backpressure inside the pool and forwarded to the broadcast dispatcher.
+- Event broadcast to subscribers uses a bounded buffer (default 1024). If a subscriber is slow, it may receive `Lagged(n)` from the stream wrapper, meaning it missed `n` events. This affects slow subscribers only and does not cause block events to be dropped before entering the broadcast.
+- Informational events (peerConnected, peerDisconnected, newPeakHeight) are best-effort before broadcast and may be dropped under overload to avoid stalling networking.
+- Recommended approach for “catch-up” logic: maintain your own application state keyed by height/epoch and cancel/work-skip as newer events arrive. If you need every block for historical processing, use explicit queries like `get_block_by_height`/ranges in addition to the live stream.
+
+### Shutdown semantics
+- `shutdown()` signals cancellation and returns quickly.
+- `shutdown_and_wait()` cancels and then awaits all internal tasks to finish (peer workers, request processor, dispatchers), providing deterministic shutdown.
+
+### Configuration
+- `ListenerConfig` currently exposes the event buffer size. Additional knobs (timeouts, rate limits, etc.) are centralized in the core with sensible defaults and named constants.
 ## API Reference
 
 ### ChiaBlockListener Class

@@ -8,6 +8,7 @@ edition = "2021"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
+tokio-util = "0.7"
 
 # Chia-related dependencies
 chia-protocol = "0.26"

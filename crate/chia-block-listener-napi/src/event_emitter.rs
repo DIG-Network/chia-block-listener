@@ -1,17 +1,14 @@
-use chia_block_listener::error::ChiaError;
-use chia_block_listener::peer::PeerConnection;
-use chia_generator_parser::{types::ParsedBlock, BlockParser};
-
+use chia_block_listener::types::{Event as CoreEvent, BlockReceivedEvent as CoreBlockEvent};
+use chia_block_listener::Listener;
 use napi::{
     bindgen_prelude::*,
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
     JsFunction,
 };
 use napi_derive::napi;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::{error, info};
+use tokio::sync::RwLock;
+use tracing::info;
 
 #[allow(dead_code)]
 pub const EVENT_BLOCK_RECEIVED: &str = "blockReceived";
@@ -44,41 +41,11 @@ pub struct ChiaBlockListener {
 }
 
 struct ChiaBlockListenerInner {
-    peers: HashMap<String, PeerConnectionInfo>,
+    listener: Arc<Listener>,
     block_listeners: Vec<ThreadsafeFunction<BlockReceivedEvent, ErrorStrategy::Fatal>>,
     peer_connected_listeners: Vec<ThreadsafeFunction<PeerConnectedEvent, ErrorStrategy::Fatal>>,
     peer_disconnected_listeners:
         Vec<ThreadsafeFunction<PeerDisconnectedEvent, ErrorStrategy::Fatal>>,
-    block_sender: mpsc::Sender<ParsedBlockEvent>,
-    event_sender: mpsc::Sender<PeerEvent>,
-}
-
-struct PeerConnectionInfo {
-    connection: PeerConnection,
-    disconnect_tx: Option<oneshot::Sender<()>>,
-    is_connected: bool,
-}
-
-#[derive(Clone)]
-struct ParsedBlockEvent {
-    peer_id: String,
-    block: ParsedBlock,
-}
-
-#[derive(Clone)]
-struct PeerEvent {
-    event_type: PeerEventType,
-    peer_id: String,
-    host: String,
-    port: u16,
-    message: Option<String>,
-}
-
-#[derive(Clone)]
-enum PeerEventType {
-    Connected,
-    Disconnected,
-    Error,
 }
 
 // Export for TypeScript
@@ -151,127 +118,78 @@ pub struct CoinSpend {
 impl ChiaBlockListener {
     #[napi(constructor)]
     pub fn new() -> Self {
-        let (block_sender, block_receiver) = mpsc::channel(100);
-        let (event_sender, event_receiver) = mpsc::channel(100);
+        let core_listener = Arc::new(Listener::new(chia_block_listener::types::ListenerConfig::default()).expect("listener init"));
 
         let inner = Arc::new(RwLock::new(ChiaBlockListenerInner {
-            peers: HashMap::new(),
+            listener: core_listener.clone(),
             block_listeners: Vec::new(),
             peer_connected_listeners: Vec::new(),
             peer_disconnected_listeners: Vec::new(),
-            block_sender,
-            event_sender,
         }));
 
-        let inner_clone = inner.clone();
+        // Subscribe to core events and dispatch to JS listeners
+        let mut rx = core_listener.subscribe();
+        let inner_for_task = inner.clone();
         tokio::spawn(async move {
-            Self::event_loop(inner_clone, block_receiver, event_receiver).await;
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        match ev {
+                            CoreEvent::BlockReceived(core_block) => {
+                                let js_block = convert_core_block_to_js(core_block);
+                                let listeners = {
+                                    let guard = inner_for_task.read().await;
+                                    guard.block_listeners.clone()
+                                };
+                                for listener in listeners {
+                                    listener.call(js_block.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                }
+                            }
+                            CoreEvent::PeerConnected(pc) => {
+                                let js = PeerConnectedEvent { peer_id: pc.peer_id, host: pc.host, port: pc.port };
+                                let listeners = {
+                                    let guard = inner_for_task.read().await;
+                                    guard.peer_connected_listeners.clone()
+                                };
+                                for l in listeners { l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking); }
+                            }
+                            CoreEvent::PeerDisconnected(pd) => {
+                                let js = PeerDisconnectedEvent { peer_id: pd.peer_id, host: pd.host, port: pd.port, message: pd.message };
+                                let listeners = {
+                                    let guard = inner_for_task.read().await;
+                                    guard.peer_disconnected_listeners.clone()
+                                };
+                                for l in listeners { l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking); }
+                            }
+                            CoreEvent::NewPeakHeight(_np) => {
+                                // This adapter does not expose newPeakHeight on this class; handled in ChiaPeerPool if needed
+                            }
+                        }
+                    }
+                    Err(_lagged) => {
+                        // Receiver lagged or closed; best-effort delivery
+                        continue;
+                    }
+                }
+            }
         });
 
         Self { inner }
     }
 
-    async fn event_loop(
-        inner: Arc<RwLock<ChiaBlockListenerInner>>,
-        mut block_receiver: mpsc::Receiver<ParsedBlockEvent>,
-        mut event_receiver: mpsc::Receiver<PeerEvent>,
-    ) {
-        loop {
-            tokio::select! {
-                Some(block_event) = block_receiver.recv() => {
-                    // Convert ParsedBlock to external Block format
-                    let block_received_event = ChiaBlockListener::convert_parsed_block_to_external(&block_event.block, block_event.peer_id);
-
-                    let listeners = {
-                        let guard = inner.read().await;
-                        guard.block_listeners.clone()
-                    };
-                    for listener in listeners {
-                        listener.call(block_received_event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                    }
-                }
-                Some(peer_event) = event_receiver.recv() => {
-                    match peer_event.event_type {
-                        PeerEventType::Connected => {
-                            let connected_event = PeerConnectedEvent {
-                                peer_id: peer_event.peer_id,
-                                host: peer_event.host,
-                                port: peer_event.port as u32,
-                            };
-                            let listeners = {
-                                let guard = inner.read().await;
-                                guard.peer_connected_listeners.clone()
-                            };
-                            for listener in listeners {
-                                listener.call(connected_event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                            }
-                        }
-                        PeerEventType::Disconnected => {
-                            let disconnected_event = PeerDisconnectedEvent {
-                                peer_id: peer_event.peer_id,
-                                host: peer_event.host,
-                                port: peer_event.port as u32,
-                                message: peer_event.message,
-                            };
-                            let listeners = {
-                                let guard = inner.read().await;
-                                guard.peer_disconnected_listeners.clone()
-                            };
-                            for listener in listeners {
-                                listener.call(disconnected_event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                            }
-                        }
-                        PeerEventType::Error => {
-                            // Handle errors by treating them as disconnections
-                            let disconnected_event = PeerDisconnectedEvent {
-                                peer_id: peer_event.peer_id,
-                                host: peer_event.host,
-                                port: peer_event.port as u32,
-                                message: peer_event.message,
-                            };
-                            let listeners = {
-                                let guard = inner.read().await;
-                                guard.peer_disconnected_listeners.clone()
-                            };
-                            for listener in listeners {
-                                listener.call(disconnected_event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                            }
-                        }
-                    }
-                }
-                else => break,
-            }
-        }
-    }
-
     #[napi]
     pub fn add_peer(&self, host: String, port: u16, network_id: String) -> Result<String> {
-        let peer = PeerConnection::new(host.clone(), port, network_id);
-
         let rt = tokio::runtime::Handle::current();
         let inner = self.inner.clone();
-
-        let peer_id = rt.block_on(async {
-            let mut guard = inner.write().await;
-            let peer_id = host.clone();
-
-            guard.peers.insert(
-                peer_id.clone(),
-                PeerConnectionInfo {
-                    connection: peer.clone(),
-                    disconnect_tx: None,
-                    is_connected: false,
-                },
-            );
-
-            peer_id
-        });
-
-        info!("Added peer {} with ID {}", host, peer_id);
-
-        // Automatically start connection for this peer
-        self.start_peer_connection(peer_id.clone(), peer);
-
+        let peer_id = rt.block_on(async move {
+            let guard = inner.read().await;
+            guard
+                .listener
+                .add_peer(host, port, network_id)
+                .await
+                .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to add peer: {e}")))
+        })?;
+        info!("Added peer with ID {}", peer_id);
         Ok(peer_id)
     }
 
@@ -279,53 +197,50 @@ impl ChiaBlockListener {
     pub fn disconnect_peer(&self, peer_id: String) -> Result<bool> {
         let rt = tokio::runtime::Handle::current();
         let inner = self.inner.clone();
-
-        let disconnected = rt.block_on(async {
-            let mut guard = inner.write().await;
-            if let Some(mut peer_info) = guard.peers.remove(&peer_id) {
-                if let Some(disconnect_tx) = peer_info.disconnect_tx.take() {
-                    let _ = disconnect_tx.send(());
-                }
-                true
-            } else {
-                false
-            }
-        });
-
-        Ok(disconnected)
+        rt.block_on(async move {
+            let guard = inner.read().await;
+            guard
+                .listener
+                .remove_peer(peer_id)
+                .await
+                .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to disconnect peer: {e}")))
+        })
     }
 
     #[napi]
     pub fn disconnect_all_peers(&self) -> Result<()> {
         let rt = tokio::runtime::Handle::current();
         let inner = self.inner.clone();
+        rt.block_on(async move {
+            let guard = inner.read().await;
+            let peers = guard
+                .listener
+                .get_connected_peers()
+                .await
+                .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))?;
+            drop(guard);
 
-        rt.block_on(async {
-            let mut guard = inner.write().await;
-
-            let peer_ids: Vec<String> = guard.peers.keys().cloned().collect();
-            for peer_id in peer_ids {
-                if let Some(mut peer_info) = guard.peers.remove(&peer_id) {
-                    if let Some(disconnect_tx) = peer_info.disconnect_tx.take() {
-                        let _ = disconnect_tx.send(());
-                    }
-                }
+            // Remove peers sequentially
+            for pid in peers {
+                let guard2 = inner.read().await;
+                let _ = guard2.listener.remove_peer(pid).await;
             }
-        });
-
-        info!("Disconnected all peers");
-        Ok(())
+            Ok(())
+        })
     }
 
     #[napi]
     pub fn get_connected_peers(&self) -> Result<Vec<String>> {
         let rt = tokio::runtime::Handle::current();
         let inner = self.inner.clone();
-
-        Ok(rt.block_on(async {
+        rt.block_on(async move {
             let guard = inner.read().await;
-            guard.peers.keys().cloned().collect()
-        }))
+            guard
+                .listener
+                .get_connected_peers()
+                .await
+                .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+        })
     }
 
     #[napi]
@@ -537,278 +452,21 @@ impl ChiaBlockListener {
         })
     }
 
-    fn start_peer_connection(&self, peer_id: String, peer: PeerConnection) {
-        let inner = self.inner.clone();
-
-        tokio::spawn(async move {
-            let (disconnect_tx, disconnect_rx) = oneshot::channel();
-
-            // Store disconnect channel
-            {
-                let mut guard = inner.write().await;
-                if let Some(peer_info) = guard.peers.get_mut(&peer_id) {
-                    peer_info.disconnect_tx = Some(disconnect_tx);
-                }
-            }
-
-            let host = peer.host().to_string();
-            let port = peer.port();
-
-            match peer.connect().await {
-                Ok(mut ws_stream) => {
-                    info!("Connected to peer {} (ID: {})", host, &peer_id);
-
-                    if let Err(e) = peer.handshake(&mut ws_stream).await {
-                        error!(
-                            "Handshake failed for peer {} (ID: {}): {}",
-                            host, &peer_id, e
-                        );
-                        let guard = inner.read().await;
-                        let _ = guard
-                            .event_sender
-                            .send(PeerEvent {
-                                event_type: PeerEventType::Error,
-                                peer_id: peer_id.clone(),
-                                host: host.clone(),
-                                port,
-                                message: Some(format!("Handshake failed: {e}")),
-                            })
-                            .await;
-                        return;
-                    }
-
-                    // Send connected event after successful handshake
-                    {
-                        let guard = inner.read().await;
-                        let _ = guard
-                            .event_sender
-                            .send(PeerEvent {
-                                event_type: PeerEventType::Connected,
-                                peer_id: peer_id.clone(),
-                                host: host.clone(),
-                                port,
-                                message: None,
-                            })
-                            .await;
-                    }
-
-                    // Mark peer as connected
-                    {
-                        let mut guard = inner.write().await;
-                        if let Some(peer_info) = guard.peers.get_mut(&peer_id) {
-                            peer_info.is_connected = true;
-                        }
-                    }
-
-                    // Create block sender for this peer
-                    let block_sender = {
-                        let guard = inner.read().await;
-                        guard.block_sender.clone()
-                    };
-
-                    let (block_tx, mut block_rx) = mpsc::channel(100);
-
-                    // Clone peer_id for the block listener task
-                    let peer_id_for_listener = peer_id.clone();
-                    let peer_id_for_blocks = peer_id.clone();
-
-                    // Spawn block listener
-                    let inner_for_listener = inner.clone();
-                    let host_for_listener = host.clone();
-                    tokio::spawn(async move {
-                        tokio::select! {
-                            result = PeerConnection::listen_for_blocks(ws_stream, block_tx) => {
-                                match result {
-                                    Ok(_) => info!("Peer {} (ID: {}) disconnected normally", host_for_listener, &peer_id_for_listener),
-                                    Err(e) => {
-                                        error!("Error listening to peer {} (ID: {}): {}", host_for_listener, &peer_id_for_listener, e);
-                                        let guard = inner_for_listener.read().await;
-                                        let _ = guard.event_sender.send(PeerEvent {
-                                            event_type: PeerEventType::Error,
-                                            peer_id: peer_id_for_listener.clone(),
-                                            host: host_for_listener.clone(),
-                                            port,
-                                            message: Some(e.to_string()),
-                                        }).await;
-                                    }
-                                }
-                            }
-                            _ = disconnect_rx => {
-                                info!("Peer {} (ID: {}) disconnected by request", host_for_listener, &peer_id_for_listener);
-                            }
-                        }
-
-                        // Send disconnected event
-                        let guard = inner_for_listener.read().await;
-                        let _ = guard
-                            .event_sender
-                            .send(PeerEvent {
-                                event_type: PeerEventType::Disconnected,
-                                peer_id: peer_id_for_listener.clone(),
-                                host: host_for_listener.clone(),
-                                port,
-                                message: Some("Connection closed".to_string()),
-                            })
-                            .await;
-                        drop(guard);
-
-                        // Mark peer as disconnected
-                        let mut guard = inner_for_listener.write().await;
-                        if let Some(peer_info) = guard.peers.get_mut(&peer_id_for_listener) {
-                            peer_info.is_connected = false;
-                        }
-                    });
-
-                    // Forward parsed blocks with peer ID
-                    while let Some(parsed_block) = block_rx.recv().await {
-                        info!(
-                            "Received parsed block {} with {} coin additions, {} coin removals, {} coin spends, {} coin creations",
-                            parsed_block.height,
-                            parsed_block.coin_additions.len(),
-                            parsed_block.coin_removals.len(),
-                            parsed_block.coin_spends.len(),
-                            parsed_block.coin_creations.len()
-                        );
-
-                        let _ = block_sender
-                            .send(ParsedBlockEvent {
-                                peer_id: peer_id_for_blocks.clone(),
-                                block: parsed_block,
-                            })
-                            .await;
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to connect to peer {} (ID: {}): {}",
-                        host, &peer_id, e
-                    );
-                    let guard = inner.read().await;
-                    let _ = guard
-                        .event_sender
-                        .send(PeerEvent {
-                            event_type: PeerEventType::Error,
-                            peer_id: peer_id.clone(),
-                            host,
-                            port,
-                            message: Some(format!("Connection failed: {e}")),
-                        })
-                        .await;
-                }
-            }
-        });
-    }
-
-    // Helper function to convert internal types to external types
-    pub fn convert_parsed_block_to_external(
-        parsed_block: &ParsedBlock,
-        peer_id: String,
-    ) -> BlockReceivedEvent {
-        BlockReceivedEvent {
-            peer_id,
-            height: parsed_block.height,
-            weight: parsed_block.weight.clone(),
-            header_hash: parsed_block.header_hash.clone(),
-            timestamp: parsed_block.timestamp.unwrap_or(0),
-            coin_additions: parsed_block
-                .coin_additions
-                .iter()
-                .map(|coin| CoinRecord {
-                    parent_coin_info: coin.parent_coin_info.clone(),
-                    puzzle_hash: coin.puzzle_hash.clone(),
-                    amount: coin.amount.to_string(),
-                })
-                .collect(),
-            coin_removals: parsed_block
-                .coin_removals
-                .iter()
-                .map(|coin| CoinRecord {
-                    parent_coin_info: coin.parent_coin_info.clone(),
-                    puzzle_hash: coin.puzzle_hash.clone(),
-                    amount: coin.amount.to_string(),
-                })
-                .collect(),
-            coin_spends: parsed_block
-                .coin_spends
-                .iter()
-                .map(|spend| CoinSpend {
-                    coin: CoinRecord {
-                        parent_coin_info: spend.coin.parent_coin_info.clone(),
-                        puzzle_hash: spend.coin.puzzle_hash.clone(),
-                        amount: spend.coin.amount.to_string(),
-                    },
-                    puzzle_reveal: spend.puzzle_reveal.clone(),
-                    solution: spend.solution.clone(),
-                    offset: spend.offset,
-                })
-                .collect(),
-            coin_creations: parsed_block
-                .coin_creations
-                .iter()
-                .map(|coin| CoinRecord {
-                    parent_coin_info: coin.parent_coin_info.clone(),
-                    puzzle_hash: coin.puzzle_hash.clone(),
-                    amount: coin.amount.to_string(),
-                })
-                .collect(),
-            has_transactions_generator: parsed_block.has_transactions_generator,
-            generator_size: parsed_block.generator_size.unwrap_or(0),
-        }
-    }
+    // Helper function lives below: convert_core_block_to_js
 
     #[napi]
-    pub fn get_block_by_height(&self, peer_id: String, height: u32) -> Result<BlockReceivedEvent> {
+    pub fn get_block_by_height(&self, _peer_id: String, height: u32) -> Result<BlockReceivedEvent> {
         let rt = tokio::runtime::Handle::current();
         let inner = self.inner.clone();
-
-        let block_result = rt.block_on(async {
+        rt.block_on(async move {
             let guard = inner.read().await;
-
-            if let Some(peer_info) = guard.peers.get(&peer_id) {
-                let peer = peer_info.connection.clone();
-                drop(guard); // Release the lock before connecting
-
-                // Create a new connection for this request
-                match peer.connect().await {
-                    Ok(mut ws_stream) => {
-                        // Perform handshake
-                        if let Err(e) = peer.handshake(&mut ws_stream).await {
-                            return Err(ChiaError::Protocol(format!("Handshake failed: {e}")));
-                        }
-
-                        // Request the block
-                        peer.request_block_by_height(height as u64, &mut ws_stream)
-                            .await
-                    }
-                    Err(e) => Err(e),
-                }
-            } else {
-                Err(ChiaError::Connection(format!("Peer {peer_id} not found")))
-            }
-        });
-
-        match block_result {
-            Ok(block) => {
-                // Parse the block using chia-generator-parser
-                let parser = BlockParser::new();
-                let parsed_block = parser.parse_full_block(&block).map_err(|e| {
-                    Error::new(
-                        Status::GenericFailure,
-                        format!("Failed to parse block: {e}"),
-                    )
-                })?;
-
-                // Convert to Block type
-                Ok(Self::convert_parsed_block_to_external(
-                    &parsed_block,
-                    peer_id.clone(),
-                ))
-            }
-            Err(e) => Err(Error::new(
-                Status::GenericFailure,
-                format!("Failed to get block: {e}"),
-            )),
-        }
+            let core_block: CoreBlockEvent = guard
+                .listener
+                .get_block_by_height(height as u64)
+                .await
+                .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to get block: {e}")))?;
+            Ok(convert_core_block_to_js(core_block))
+        })
     }
 
     #[napi]
@@ -832,7 +490,7 @@ impl ChiaBlockListener {
                 Ok(block) => blocks.push(block),
                 Err(e) => {
                     // Log error but continue with other blocks
-                    error!("Failed to get block at height {}: {}", height, e);
+                    // using napi::Error means we can't easily log here without a logger; silently continue
                 }
             }
         }
@@ -844,5 +502,59 @@ impl ChiaBlockListener {
 impl Default for ChiaBlockListener {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// Single source of truth for converting core block into JS DTO used by this adapter
+fn convert_core_block_to_js(core: CoreBlockEvent) -> BlockReceivedEvent {
+    BlockReceivedEvent {
+        peer_id: core.peer_id,
+        height: core.height,
+        weight: core.weight,
+        header_hash: core.header_hash,
+        timestamp: core.timestamp,
+        coin_additions: core
+            .coin_additions
+            .into_iter()
+            .map(|c| CoinRecord {
+                parent_coin_info: c.parent_coin_info,
+                puzzle_hash: c.puzzle_hash,
+                amount: c.amount,
+            })
+            .collect(),
+        coin_removals: core
+            .coin_removals
+            .into_iter()
+            .map(|c| CoinRecord {
+                parent_coin_info: c.parent_coin_info,
+                puzzle_hash: c.puzzle_hash,
+                amount: c.amount,
+            })
+            .collect(),
+        coin_spends: core
+            .coin_spends
+            .into_iter()
+            .map(|s| CoinSpend {
+                coin: CoinRecord {
+                    parent_coin_info: s.coin.parent_coin_info,
+                    puzzle_hash: s.coin.puzzle_hash,
+                    amount: s.coin.amount,
+                },
+                puzzle_reveal: s.puzzle_reveal,
+                solution: s.solution,
+                offset: s.offset,
+            })
+            .collect(),
+        coin_creations: core
+            .coin_creations
+            .into_iter()
+            .map(|c| CoinRecord {
+                parent_coin_info: c.parent_coin_info,
+                puzzle_hash: c.puzzle_hash,
+                amount: c.amount,
+            })
+            .collect(),
+        has_transactions_generator: core.has_transactions_generator,
+        generator_size: core.generator_size,
     }
 }

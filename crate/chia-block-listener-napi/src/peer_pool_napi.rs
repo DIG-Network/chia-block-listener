@@ -1,8 +1,8 @@
-use chia_block_listener::peer_pool::ChiaPeerPool as InternalPeerPool;
 use chia_block_listener::types::{
     BlockReceivedEvent as CoreBlockReceivedEvent, NewPeakHeightEvent, PeerConnectedEvent,
     PeerDisconnectedEvent,
 };
+use chia_block_listener::{Listener, ListenerConfig};
 use crate::event_emitter::BlockReceivedEvent;
 use napi::bindgen_prelude::*;
 use napi::{
@@ -16,7 +16,7 @@ use tracing::info;
 
 #[napi]
 pub struct ChiaPeerPool {
-    pool: Arc<InternalPeerPool>,
+    listener: Arc<Listener>,
     listeners: Arc<RwLock<EventListeners>>,
 }
 
@@ -31,56 +31,62 @@ struct EventListeners {
 impl ChiaPeerPool {
     #[napi(constructor)]
     pub fn new() -> Self {
-        info!("Creating new ChiaPeerPool");
+        info!("Creating new ChiaPeerPool (N-API adapter over core Listener)");
         let listeners = Arc::new(RwLock::new(EventListeners {
             peer_connected_listeners: Vec::new(),
             peer_disconnected_listeners: Vec::new(),
             new_peak_height_listeners: Vec::new(),
         }));
 
-        let pool = Arc::new(InternalPeerPool::new());
+        let listener = Arc::new(Listener::new(ListenerConfig::default()).expect("listener init"));
 
-        // Set event callbacks on the pool
-        let listeners_connected = listeners.clone();
-        let listeners_disconnected = listeners.clone();
-        let listeners_new_peak = listeners.clone();
+        // Subscribe to core events and forward relevant ones to JS listeners
+        let mut rx = listener.subscribe();
+        let listeners_for_task = listeners.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        match ev {
+                            chia_block_listener::types::Event::PeerConnected(pc) => {
+                                let js = PeerConnectedEvent { peer_id: pc.peer_id, host: pc.host, port: pc.port };
+                                let guard = listeners_for_task.read().await;
+                                for l in &guard.peer_connected_listeners {
+                                    l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                }
+                            }
+                            chia_block_listener::types::Event::PeerDisconnected(pd) => {
+                                let js = PeerDisconnectedEvent { peer_id: pd.peer_id, host: pd.host, port: pd.port, message: pd.message };
+                                let guard = listeners_for_task.read().await;
+                                for l in &guard.peer_disconnected_listeners {
+                                    l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                }
+                            }
+                            chia_block_listener::types::Event::NewPeakHeight(np) => {
+                                let guard = listeners_for_task.read().await;
+                                for l in &guard.new_peak_height_listeners {
+                                    l.call(np.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                }
+                            }
+                            chia_block_listener::types::Event::BlockReceived(_) => {
+                                // ChiaPeerPool adapter does not forward blockReceived; that lives on ChiaBlockListener
+                            }
+                        }
+                    }
+                    Err(_lagged) => {
+                        // best-effort delivery; continue
+                        continue;
+                    }
+                }
+            }
+        });
 
-        pool.set_event_callbacks(
-            Box::new(move |event| {
-                let listeners = listeners_connected.clone();
-                tokio::spawn(async move {
-                    let guard = listeners.read().await;
-                    for listener in &guard.peer_connected_listeners {
-                        listener.call(event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                    }
-                });
-            }),
-            Box::new(move |event| {
-                let listeners = listeners_disconnected.clone();
-                tokio::spawn(async move {
-                    let guard = listeners.read().await;
-                    for listener in &guard.peer_disconnected_listeners {
-                        listener.call(event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                    }
-                });
-            }),
-            Box::new(move |event| {
-                let listeners = listeners_new_peak.clone();
-                tokio::spawn(async move {
-                    let guard = listeners.read().await;
-                    for listener in &guard.new_peak_height_listeners {
-                        listener.call(event.clone(), ThreadsafeFunctionCallMode::NonBlocking);
-                    }
-                });
-            }),
-        );
-
-        Self { pool, listeners }
+        Self { listener, listeners }
     }
 
     #[napi(js_name = "addPeer")]
     pub async fn add_peer(&self, host: String, port: u16, network_id: String) -> Result<String> {
-        self.pool
+        self.listener
             .add_peer(host, port, network_id)
             .await
             .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to add peer: {e}")))
@@ -89,7 +95,7 @@ impl ChiaPeerPool {
     #[napi(js_name = "getBlockByHeight")]
     pub async fn get_block_by_height(&self, height: u32) -> Result<BlockReceivedEvent> {
         let core_block: CoreBlockReceivedEvent = self
-            .pool
+            .listener
             .get_block_by_height(height as u64)
             .await
             .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to get block: {e}")))?;
@@ -99,7 +105,7 @@ impl ChiaPeerPool {
 
     #[napi(js_name = "removePeer")]
     pub async fn remove_peer(&self, peer_id: String) -> Result<bool> {
-        self.pool.remove_peer(peer_id).await.map_err(|e| {
+        self.listener.remove_peer(peer_id).await.map_err(|e| {
             Error::new(
                 Status::GenericFailure,
                 format!("Failed to remove peer: {e}"),
@@ -109,7 +115,7 @@ impl ChiaPeerPool {
 
     #[napi]
     pub async fn shutdown(&self) -> Result<()> {
-        self.pool.shutdown().await.map_err(|e| {
+        self.listener.shutdown().await.map_err(|e| {
             Error::new(
                 Status::GenericFailure,
                 format!("Failed to shutdown pool: {e}"),
@@ -119,7 +125,7 @@ impl ChiaPeerPool {
 
     #[napi(js_name = "getConnectedPeers")]
     pub async fn get_connected_peers(&self) -> Result<Vec<String>> {
-        self.pool.get_connected_peers().await.map_err(|e| {
+        self.listener.get_connected_peers().await.map_err(|e| {
             Error::new(
                 Status::GenericFailure,
                 format!("Failed to get connected peers: {e}"),
@@ -129,7 +135,7 @@ impl ChiaPeerPool {
 
     #[napi(js_name = "getPeakHeight")]
     pub async fn get_peak_height(&self) -> Result<Option<u32>> {
-        Ok(self.pool.get_highest_peak().await)
+        Ok(self.listener.get_highest_peak().await)
     }
 
     #[napi]
@@ -218,12 +224,6 @@ impl ChiaPeerPool {
         });
 
         Ok(())
-    }
-}
-
-impl Default for ChiaPeerPool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
