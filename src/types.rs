@@ -62,12 +62,22 @@ pub enum Event {
 
 // Configuration for Listener / event buffering
 #[derive(Clone, Debug)]
-pub struct ListenerConfig {
+pub struct BlockListenerConfig {
     pub buffer: usize, // ring buffer size per subscriber
+    pub auto_reconnect: bool,
+    pub network_id: String,
+    pub default_port: u16,
+    pub max_auto_reconnect_retries: u32,
 }
 
-impl Default for ListenerConfig {
+impl Default for BlockListenerConfig {
     fn default() -> Self {
-        Self { buffer: 1024 }
+        Self {
+            buffer: 1024,
+            auto_reconnect: false,
+            network_id: "mainnet".to_string(),
+            default_port: 8444,
+            max_auto_reconnect_retries: 10,
+        }
     }
 }

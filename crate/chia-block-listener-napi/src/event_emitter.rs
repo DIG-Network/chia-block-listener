@@ -118,7 +118,7 @@ pub struct CoinSpend {
 impl ChiaBlockListener {
     #[napi(constructor)]
     pub fn new() -> Self {
-        let core_listener = Arc::new(BlockListener::new(chia_block_listener::types::ListenerConfig::default()).expect("listener init"));
+        let core_listener = Arc::new(BlockListener::new(chia_block_listener::types::BlockListenerConfig::default()).expect("listener init"));
 
         let inner = Arc::new(RwLock::new(ChiaBlockListenerInner {
             listener: core_listener.clone(),

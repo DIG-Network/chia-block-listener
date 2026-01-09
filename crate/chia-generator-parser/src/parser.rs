@@ -22,7 +22,7 @@ use clvmr::{
     Allocator, NodePtr,
 };
 use sha2::{Digest, Sha256};
-use tracing::info;
+use tracing::{debug, info};
 
 /// Block parser that extracts generator information from FullBlock structures
 pub struct BlockParser {
@@ -302,7 +302,7 @@ impl BlockParser {
     ) -> Option<CoinSpendInfo> {
         // Extract parent coin info
         let parent_bytes = self.extract_parent_coin_info(allocator, coin_spend)?;
-        info!("🔍 DEBUG: parent_bytes length = {}", parent_bytes.len());
+        debug!("parent_bytes length = {}", parent_bytes.len());
 
         if parent_bytes.len() != 32 {
             info!(
@@ -314,8 +314,8 @@ impl BlockParser {
 
         // parent_bytes is already Vec<u8> with 32 bytes, just hex encode it directly
         let parent_hex = hex::encode(&parent_bytes);
-        info!(
-            "🔍 DEBUG: parent_coin_info hex = {} (length: {})",
+        debug!(
+            "parent_coin_info hex = {} (length: {})",
             parent_hex,
             parent_hex.len()
         );
@@ -334,8 +334,8 @@ impl BlockParser {
 
         // Calculate puzzle hash
         let puzzle_hash_vec = tree_hash(allocator, puzzle);
-        info!(
-            "🔍 DEBUG: tree_hash returned {} bytes",
+        debug!(
+            "tree_hash returned {} bytes",
             puzzle_hash_vec.len()
         );
 
@@ -349,8 +349,8 @@ impl BlockParser {
 
         // tree_hash returns Vec<u8> with 32 bytes, just hex encode it directly
         let puzzle_hash_hex = hex::encode(&puzzle_hash_vec);
-        info!(
-            "🔍 DEBUG: puzzle_hash hex = {} (length: {})",
+        debug!(
+            "puzzle_hash hex = {} (length: {})",
             puzzle_hash_hex,
             puzzle_hash_hex.len()
         );

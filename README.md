@@ -149,12 +149,42 @@ async fn main() -> anyhow::Result<()> {
 - **Consumption pattern:** Your app owns the policy loop—subscribe once, then react to events as they arrive. Slow subscribers may receive `Lagged(n)` from the broadcast wrapper; recompute state as needed. For guaranteed historical coverage, pair live listening with explicit `get_block_by_height` / range queries.
 - **Shutdown:** `shutdown()` signals cancellation; `shutdown_and_wait()` awaits the dispatcher and all tracked peer/request tasks for deterministic teardown. `Drop` on `Listener` signals cancel without awaiting (non-blocking drop safety).
 
+### Auto-reconnect (DNS-driven, Rust API)
+- **Opt-in via config:** Set `BlockListenerConfig { auto_reconnect: true, network_id, default_port, max_auto_reconnect_retries, .. }` when constructing `BlockListener`.
+- **When it runs:** The auto-reconnect task starts on the first `subscribe()` call. It keeps one active peer for you; manual `add_peer` calls still work and can coexist.
+- **How it works:**
+  - Uses the core DNS introducers for the configured `network_id` (default `mainnet`) and `default_port` (default `8444`).
+  - On startup (if no peers connected) or when all peers disconnect, it runs discovery, shuffles the results, and tries each peer in the batch until one connects.
+  - If a peer disconnects and none remain, discovery is rerun and peers are retried in batches up to `max_auto_reconnect_retries` (default 10 batches). Failure after all retries surfaces a best-effort `PeerDisconnected` event with an explanatory message.
+- **Backpressure & events:** Once connected, live events still flow through the same sink → broadcast pipeline; block delivery guarantees and backpressure semantics remain unchanged.
+- **Example:**
+```rust
+use chia_block_listener::{BlockListener, BlockListenerConfig};
+
+let config = BlockListenerConfig {
+    auto_reconnect: true,
+    network_id: "mainnet".into(),
+    default_port: 8444,
+    max_auto_reconnect_retries: 10,
+    buffer: 1024,
+};
+
+let listener = BlockListener::new(config)?;
+let mut rx = listener.subscribe(); // kicks off auto-reconnect
+```
+
 ### Shutdown semantics
 - `shutdown()` signals cancellation and returns quickly.
 - `shutdown_and_wait()` cancels and then awaits all internal tasks to finish (peer workers, request processor, dispatchers), providing deterministic shutdown.
 
 ### Configuration
-- `ListenerConfig` currently exposes the event buffer size. Additional knobs (timeouts, rate limits, etc.) are centralized in the core with sensible defaults and named constants.
+- `BlockListenerConfig` exposes:
+  - `buffer` (event buffer per subscriber, default 1024)
+  - `auto_reconnect` (enable DNS-based single-peer maintenance)
+  - `network_id` (e.g., `mainnet`, `testnet11`; used for DNS discovery)
+  - `default_port` (port used for discovered peers, default 8444)
+  - `max_auto_reconnect_retries` (discovery batches to attempt before surfacing an error event, default 10)
+- Additional knobs (timeouts, rate limits, etc.) are centralized in the core with sensible defaults and named constants.
 ## API Reference
 
 ### ChiaBlockListener Class

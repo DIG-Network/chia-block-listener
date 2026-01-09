@@ -2,14 +2,16 @@
 
 pub mod error;
 pub mod types;
+pub mod dns_discovery;
+pub mod block_listener;
 pub mod peer;
 pub mod peer_pool;
 pub mod protocol;
 pub mod tls;
-pub mod block_listener;
 
 pub use block_listener::BlockListener;
-pub use types::ListenerConfig;
+pub use dns_discovery::{DnsDiscoveryClient, DiscoveryResult, DnsDiscoveryError, PeerAddress};
+pub use types::BlockListenerConfig;
 
 pub fn init_tracing() {
     // Initialize logging with a filter for our crate
