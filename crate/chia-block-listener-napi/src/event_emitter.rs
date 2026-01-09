@@ -1,5 +1,5 @@
 use chia_block_listener::types::{Event as CoreEvent, BlockReceivedEvent as CoreBlockEvent};
-use chia_block_listener::Listener;
+use chia_block_listener::BlockListener;
 use napi::{
     bindgen_prelude::*,
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -41,7 +41,7 @@ pub struct ChiaBlockListener {
 }
 
 struct ChiaBlockListenerInner {
-    listener: Arc<Listener>,
+    listener: Arc<BlockListener>,
     block_listeners: Vec<ThreadsafeFunction<BlockReceivedEvent, ErrorStrategy::Fatal>>,
     peer_connected_listeners: Vec<ThreadsafeFunction<PeerConnectedEvent, ErrorStrategy::Fatal>>,
     peer_disconnected_listeners:
@@ -118,7 +118,7 @@ pub struct CoinSpend {
 impl ChiaBlockListener {
     #[napi(constructor)]
     pub fn new() -> Self {
-        let core_listener = Arc::new(Listener::new(chia_block_listener::types::ListenerConfig::default()).expect("listener init"));
+        let core_listener = Arc::new(BlockListener::new(chia_block_listener::types::ListenerConfig::default()).expect("listener init"));
 
         let inner = Arc::new(RwLock::new(ChiaBlockListenerInner {
             listener: core_listener.clone(),

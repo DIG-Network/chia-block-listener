@@ -71,7 +71,7 @@ process.on('SIGINT', () => {
 
 ## Rust usage (canonical, Rust-first interface)
 
-This repository now provides a pure Rust API suitable for use in Tokio-based applications, while the N-API adapter remains a thin layer for Node.js.
+This repository now provides a pure Rust API suitable for use in Tokio-based applications, while the N-API adapter remains a thin layer for Node.js. The Rust-facing entry point is `BlockListener` (previously named `Listener`).
 
 Key points of the Rust API:
 - Your application owns the policy/event loop. The library only manages networking, peers, and event emission.
@@ -81,7 +81,7 @@ Key points of the Rust API:
 Example:
 
 ```rust
-use chia_block_listener::{init_tracing, Listener, ListenerConfig};
+use chia_block_listener::{init_tracing, BlockListener, ListenerConfig};
 use chia_block_listener::types::Event;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
@@ -91,15 +91,15 @@ async fn main() -> anyhow::Result<()> {
     // Optional: enable logging
     init_tracing();
 
-    // Configure and create the listener (buffer defaults to 1024)
-    let listener = Listener::new(ListenerConfig::default())?;
+    // Configure and create the block listener (buffer defaults to 1024)
+    let block_listener = BlockListener::new(ListenerConfig::default())?;
 
     // Subscribe to events (bounded, best-effort delivery)
-    let rx = listener.subscribe();
+    let rx = block_listener.subscribe();
     let mut events = BroadcastStream::new(rx);
 
     // Connect a peer
-    let _peer_id = listener.add_peer("localhost".into(), 8444, "mainnet".into()).await?;
+    let _peer_id = block_listener.add_peer("localhost".into(), 8444, "mainnet".into()).await?;
 
     // Application-owned policy loop: read events and act
     let policy = tokio::spawn(async move {
@@ -127,9 +127,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Shutdown example (e.g., on SIGINT/SIGTERM):
     // Signal fast
-    listener.shutdown().await?;
+    block_listener.shutdown().await?;
     // Wait for all internal tasks to end deterministically
-    listener.shutdown_and_wait().await?;
+    block_listener.shutdown_and_wait().await?;
 
     policy.await?;
     Ok(())
@@ -141,6 +141,13 @@ async fn main() -> anyhow::Result<()> {
 - Event broadcast to subscribers uses a bounded buffer (default 1024). If a subscriber is slow, it may receive `Lagged(n)` from the stream wrapper, meaning it missed `n` events. This affects slow subscribers only and does not cause block events to be dropped before entering the broadcast.
 - Informational events (peerConnected, peerDisconnected, newPeakHeight) are best-effort before broadcast and may be dropped under overload to avoid stalling networking.
 - Recommended approach for “catch-up” logic: maintain your own application state keyed by height/epoch and cancel/work-skip as newer events arrive. If you need every block for historical processing, use explicit queries like `get_block_by_height`/ranges in addition to the live stream.
+
+### Passive WebSocket listening and multi-peer behavior
+- **Listener, not poller:** Each `add_peer` establishes a dedicated streaming WebSocket reader (per peer) that passively consumes protocol messages and drives events. `NewPeakWallet` triggers a `RequestBlock` immediately; `RespondBlock` is parsed and emitted as `Event::BlockReceived` via the core event pipeline.
+- **Unified event pipeline:** All live events (`PeerConnected`, `PeerDisconnected`, `NewPeakHeight`, `BlockReceived`) flow through a single core mpsc sink and are forwarded to all subscribers via `broadcast`. Blocks use `send().await` into the sink (no pre-broadcast drop); informational events are best-effort `try_send` to avoid stalling I/O.
+- **Multiple peers:** You can call `add_peer` multiple times. The pool tracks each peer independently with its own streaming reader and request worker. On-demand requests (`get_block_by_height`) use round-robin with cooldown and remove unhealthy peers based on repeated failures/timeouts/protocol errors.
+- **Consumption pattern:** Your app owns the policy loop—subscribe once, then react to events as they arrive. Slow subscribers may receive `Lagged(n)` from the broadcast wrapper; recompute state as needed. For guaranteed historical coverage, pair live listening with explicit `get_block_by_height` / range queries.
+- **Shutdown:** `shutdown()` signals cancellation; `shutdown_and_wait()` awaits the dispatcher and all tracked peer/request tasks for deterministic teardown. `Drop` on `Listener` signals cancel without awaiting (non-blocking drop safety).
 
 ### Shutdown semantics
 - `shutdown()` signals cancellation and returns quickly.

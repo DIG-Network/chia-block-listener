@@ -2,7 +2,7 @@ use chia_block_listener::types::{
     BlockReceivedEvent as CoreBlockReceivedEvent, NewPeakHeightEvent, PeerConnectedEvent,
     PeerDisconnectedEvent,
 };
-use chia_block_listener::{Listener, ListenerConfig};
+use chia_block_listener::{BlockListener, ListenerConfig};
 use crate::event_emitter::BlockReceivedEvent;
 use napi::bindgen_prelude::*;
 use napi::{
@@ -16,7 +16,7 @@ use tracing::info;
 
 #[napi]
 pub struct ChiaPeerPool {
-    listener: Arc<Listener>,
+    listener: Arc<BlockListener>,
     listeners: Arc<RwLock<EventListeners>>,
 }
 
@@ -38,7 +38,7 @@ impl ChiaPeerPool {
             new_peak_height_listeners: Vec::new(),
         }));
 
-        let listener = Arc::new(Listener::new(ListenerConfig::default()).expect("listener init"));
+        let listener = Arc::new(BlockListener::new(ListenerConfig::default()).expect("listener init"));
 
         // Subscribe to core events and forward relevant ones to JS listeners
         let mut rx = listener.subscribe();

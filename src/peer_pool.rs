@@ -4,6 +4,7 @@ use crate::types::{
     PeerDisconnectedEvent, Event,
 };
 use crate::peer::PeerConnection;
+use crate::peer::StreamEvent;
 use chia_generator_parser::{BlockParser, ParsedBlock};
 use chia_protocol::FullBlock;
 
@@ -147,7 +148,7 @@ impl ChiaPeerPool {
 
         // Establish connection upfront
         info!("Establishing initial connection for peer {}", peer_id);
-        let ws_stream = timeout(
+        let mut ws_stream = timeout(
             Duration::from_millis(CONNECTION_TIMEOUT_MS),
             peer_connection.connect(),
         )
@@ -159,7 +160,6 @@ impl ChiaPeerPool {
         })?;
 
         // Perform handshake
-        let mut ws_stream = ws_stream;
         timeout(
             Duration::from_millis(CONNECTION_TIMEOUT_MS),
             peer_connection.handshake(&mut ws_stream),
@@ -175,6 +175,112 @@ impl ChiaPeerPool {
             "Successfully established initial connection for peer {}",
             peer_id
         );
+
+        // Start streaming listener on a dedicated connection
+        if let Some(tx_stream) = &self.event_tx {
+            let peer_conn_for_stream = peer_connection.clone();
+            let peer_id_for_stream = peer_id.clone();
+            let host_for_stream = host.clone();
+            let cancel_for_stream = self.cancel_token.clone();
+            let tx_stream_clone = tx_stream.clone();
+
+            let stream_handle = tokio::spawn(async move {
+                // Establish streaming connection
+                let stream_conn = async {
+                    let mut ws = timeout(
+                        Duration::from_millis(CONNECTION_TIMEOUT_MS),
+                        peer_conn_for_stream.connect(),
+                    )
+                    .await
+                    .map_err(|_| ChiaError::Connection("Stream connection timeout".to_string()))??;
+
+                    timeout(
+                        Duration::from_millis(CONNECTION_TIMEOUT_MS),
+                        peer_conn_for_stream.handshake(&mut ws),
+                    )
+                    .await
+                    .map_err(|_| ChiaError::Handshake("Stream handshake timeout".to_string()))??;
+
+                    Ok::<_, ChiaError>(ws)
+                };
+
+                match stream_conn.await {
+                    Ok(ws_stream) => {
+                        // Set up a small channel to receive StreamEvents from the reader loop
+                        let (stream_tx, mut stream_rx) = mpsc::channel::<StreamEvent>(REQUEST_CHANNEL_CAPACITY);
+
+                        // Spawn the reader loop
+                        let reader_cancel = cancel_for_stream.clone();
+                        let reader_peer_id = peer_id_for_stream.clone();
+                        let reader_host = host_for_stream.clone();
+                        let reader_handle = tokio::spawn(async move {
+                            let _ = PeerConnection::listen_for_blocks(
+                                ws_stream,
+                                stream_tx,
+                                reader_cancel,
+                            )
+                            .await;
+                        });
+
+                        // Forward StreamEvents into the core event sink
+                        loop {
+                            tokio::select! {
+                                _ = cancel_for_stream.cancelled() => break,
+                                maybe = stream_rx.recv() => {
+                                    match maybe {
+                                        Some(StreamEvent::ParsedBlock(parsed)) => {
+                                            let block_event = Self::convert_parsed_block_to_external(
+                                                &parsed,
+                                                reader_peer_id.clone(),
+                                            );
+                                            let mut send_fut = tx_stream_clone.send(Event::BlockReceived(block_event));
+                                            tokio::pin!(send_fut);
+                                            tokio::select! {
+                                                _ = cancel_for_stream.cancelled() => { break; }
+                                                _ = &mut send_fut => { /* sent or dropped */ }
+                                            }
+                                        }
+                                        Some(StreamEvent::NewPeak(new_peak)) => {
+                                            // Update peak state and emit best-effort
+                                            let _ = tx_stream_clone.try_send(Event::NewPeakHeight(NewPeakHeightEvent {
+                                                old_peak: None,
+                                                new_peak,
+                                                peer_id: reader_peer_id.clone(),
+                                            }));
+                                        }
+                                        None => break,
+                                    }
+                                }
+                            }
+                        }
+
+                        // Ensure reader task finishes
+                        let _ = reader_handle.await;
+
+                        // Emit disconnect best-effort
+                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
+                            peer_id: reader_peer_id.clone(),
+                            host: reader_host.clone(),
+                            port: port as u32,
+                            message: Some("Stream closed".to_string()),
+                        }));
+                    }
+                    Err(e) => {
+                        error!("Failed to start streaming for {}: {}", peer_id_for_stream, e);
+                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
+                            peer_id: peer_id_for_stream.clone(),
+                            host: host_for_stream.clone(),
+                            port: port as u32,
+                            message: Some(format!("Stream failed: {e}")),
+                        }));
+                    }
+                }
+            });
+
+            // Track the streaming task
+            let mut tasks_guard = self.tasks.lock().unwrap();
+            tasks_guard.push(stream_handle);
+        }
 
         // Create worker for this peer with the established connection
         let (worker_tx, worker_rx) = mpsc::channel(WORKER_CHANNEL_CAPACITY);

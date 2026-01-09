@@ -6,9 +6,9 @@ pub mod peer;
 pub mod peer_pool;
 pub mod protocol;
 pub mod tls;
-pub mod listener;
+pub mod block_listener;
 
-pub use listener::Listener;
+pub use block_listener::BlockListener;
 pub use types::ListenerConfig;
 
 pub fn init_tracing() {

@@ -7,14 +7,14 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-pub struct Listener {
+pub struct BlockListener {
     pool: Arc<ChiaPeerPool>,
     tx: broadcast::Sender<Event>,
     cancel: CancellationToken,
     dispatcher: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl Listener {
+impl BlockListener {
     pub fn new(config: ListenerConfig) -> Result<Self, ChiaError> {
         let (tx, _rx) = broadcast::channel(config.buffer);
 
@@ -112,7 +112,7 @@ impl Listener {
     }
 }
 
-impl Drop for Listener {
+impl Drop for BlockListener {
     fn drop(&mut self) {
         // Ensure background tasks are signalled to stop if user drops without explicit shutdown
         self.cancel.cancel();

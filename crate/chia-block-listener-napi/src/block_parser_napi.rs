@@ -124,7 +124,6 @@ impl From<&GeneratorBlockInfo> for GeneratorBlockInfoJS {
 
 // Export BlockHeightInfo for TypeScript
 #[napi(object)]
-#[derive(Clone)]
 pub struct BlockHeightInfoJS {
     pub height: u32,
     #[napi(js_name = "isTransactionBlock")]
@@ -143,12 +142,6 @@ impl From<&BlockHeightInfo> for BlockHeightInfoJS {
 #[napi]
 pub struct ChiaBlockParser {
     parser: RustBlockParser,
-}
-
-impl Default for ChiaBlockParser {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[napi]
