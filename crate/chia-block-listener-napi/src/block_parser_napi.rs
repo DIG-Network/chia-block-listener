@@ -144,7 +144,6 @@ pub struct ChiaBlockParser {
     parser: RustBlockParser,
 }
 
-
 #[napi]
 impl ChiaBlockParser {
     /// Create a new block parser
@@ -258,4 +257,3 @@ impl ChiaBlockParser {
         Ok((&block_info).into())
     }
 }
-
