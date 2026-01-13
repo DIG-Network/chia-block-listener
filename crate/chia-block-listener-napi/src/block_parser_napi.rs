@@ -144,9 +144,11 @@ pub struct ChiaBlockParser {
     parser: RustBlockParser,
 }
 
+
 #[napi]
 impl ChiaBlockParser {
     /// Create a new block parser
+    #[allow(clippy::new_without_default)]
     #[napi(constructor)]
     pub fn new() -> Self {
         info!("Creating new ChiaBlockParser");
@@ -256,3 +258,4 @@ impl ChiaBlockParser {
         Ok((&block_info).into())
     }
 }
+

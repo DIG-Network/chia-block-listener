@@ -29,6 +29,7 @@ struct EventListeners {
 
 #[napi]
 impl ChiaPeerPool {
+    #[allow(clippy::new_without_default)]
     #[napi(constructor)]
     pub fn new() -> Self {
         info!("Creating new ChiaPeerPool (N-API adapter over core Listener)");
