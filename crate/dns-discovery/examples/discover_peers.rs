@@ -1,6 +1,5 @@
 use dns_discovery::{DnsDiscovery, DnsDiscoveryError};
 use tracing::{info, Level};
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<(), DnsDiscoveryError> {

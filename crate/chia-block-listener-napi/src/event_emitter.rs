@@ -510,7 +510,7 @@ impl ChiaBlockListener {
         for height in start_height..=end_height {
             match self.get_block_by_height(peer_id.clone(), height) {
                 Ok(block) => blocks.push(block),
-                Err(e) => {
+                Err(_e) => {
                     // Log error but continue with other blocks
                     // using napi::Error means we can't easily log here without a logger; silently continue
                 }

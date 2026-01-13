@@ -1,4 +1,4 @@
-use chia_generator_parser::{BlockHeightInfo, BlockParser, GeneratorBlockInfo, ParsedGenerator};
+use chia_generator_parser::BlockParser;
 
 fn main() {
     // Initialize the parser

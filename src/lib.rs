@@ -10,6 +10,7 @@ pub mod tls;
 pub mod types;
 
 pub use block_listener::BlockListener;
+pub use chia_generator_parser::{string_to_bytes32, GeneratorParserError};
 pub use dns_discovery::{DiscoveryResult, DnsDiscoveryClient, DnsDiscoveryError, PeerAddress};
 pub use types::BlockListenerConfig;
 

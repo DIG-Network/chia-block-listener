@@ -13,9 +13,6 @@ pub type SerializedProgram = Vec<u8>;
 /// Block height reference  
 pub type BlockHeight = Uint32;
 
-/// Hash type (32 bytes) - using proper chia type
-pub type Hash32 = Bytes32;
-
 /// Comprehensive parsed block information including all coin data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedBlock {
