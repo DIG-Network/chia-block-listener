@@ -27,14 +27,22 @@ impl DnsDiscoveryClient {
         default_port: u16,
     ) -> Result<DiscoveryResult, DnsDiscoveryError> {
         let introducers_refs: Vec<&str> = introducers.iter().map(|s| s.as_str()).collect();
-        self.inner.discover_peers(&introducers_refs, default_port).await
+        self.inner
+            .discover_peers(&introducers_refs, default_port)
+            .await
     }
 
-    pub async fn resolve_ipv4(&self, hostname: &str) -> Result<Vec<std::net::Ipv4Addr>, DnsDiscoveryError> {
+    pub async fn resolve_ipv4(
+        &self,
+        hostname: &str,
+    ) -> Result<Vec<std::net::Ipv4Addr>, DnsDiscoveryError> {
         self.inner.resolve_ipv4(hostname).await
     }
 
-    pub async fn resolve_ipv6(&self, hostname: &str) -> Result<Vec<std::net::Ipv6Addr>, DnsDiscoveryError> {
+    pub async fn resolve_ipv6(
+        &self,
+        hostname: &str,
+    ) -> Result<Vec<std::net::Ipv6Addr>, DnsDiscoveryError> {
         self.inner.resolve_ipv6(hostname).await
     }
 
@@ -56,4 +64,3 @@ impl DnsDiscoveryClient {
         Ok(result)
     }
 }
-

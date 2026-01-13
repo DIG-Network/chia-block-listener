@@ -1,16 +1,16 @@
 #![deny(clippy::all)]
 
-pub mod error;
-pub mod types;
-pub mod dns_discovery;
 pub mod block_listener;
+pub mod dns_discovery;
+pub mod error;
 pub mod peer;
 pub mod peer_pool;
 pub mod protocol;
 pub mod tls;
+pub mod types;
 
 pub use block_listener::BlockListener;
-pub use dns_discovery::{DnsDiscoveryClient, DiscoveryResult, DnsDiscoveryError, PeerAddress};
+pub use dns_discovery::{DiscoveryResult, DnsDiscoveryClient, DnsDiscoveryError, PeerAddress};
 pub use types::BlockListenerConfig;
 
 pub fn init_tracing() {

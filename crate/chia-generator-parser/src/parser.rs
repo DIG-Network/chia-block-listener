@@ -1,6 +1,9 @@
 use crate::{
     error::{GeneratorParserError, Result},
-    types::{BlockHeightInfo, CoinInfo, CoinSpendInfo, GeneratorBlockInfo, ParsedBlock},
+    types::{
+        BlockHeightInfo, CoinInfo, CoinSpendInfo, GeneratorAnalysis, GeneratorBlockInfo,
+        ParsedBlock, ParsedGenerator,
+    },
 };
 use chia_bls::Signature;
 use chia_consensus::{
@@ -212,11 +215,12 @@ impl BlockParser {
     }
 
     /// Get spend bundle conditions from generator
+    #[allow(clippy::too_many_arguments)]
     fn get_spend_bundle_conditions(
         &self,
         allocator: &mut Allocator,
         generator_bytes: &[u8],
-        generator_refs: &Vec<&[u8]>,
+        generator_refs: &[&[u8]],
         max_cost: u64,
         flags: u32,
         signature: &Signature,
@@ -225,7 +229,7 @@ impl BlockParser {
         match run_block_generator2(
             allocator,
             generator_bytes,
-            generator_refs.clone(),
+            generator_refs.to_owned(),
             max_cost,
             flags,
             signature,
@@ -334,10 +338,7 @@ impl BlockParser {
 
         // Calculate puzzle hash
         let puzzle_hash_vec = tree_hash(allocator, puzzle);
-        debug!(
-            "tree_hash returned {} bytes",
-            puzzle_hash_vec.len()
-        );
+        debug!("tree_hash returned {} bytes", puzzle_hash_vec.len());
 
         if puzzle_hash_vec.len() != 32 {
             info!(
@@ -348,7 +349,7 @@ impl BlockParser {
         }
 
         // tree_hash returns Vec<u8> with 32 bytes, just hex encode it directly
-        let puzzle_hash_hex = hex::encode(&puzzle_hash_vec);
+        let puzzle_hash_hex = hex::encode(puzzle_hash_vec);
         debug!(
             "puzzle_hash hex = {} (length: {})",
             puzzle_hash_hex,
@@ -413,7 +414,7 @@ impl BlockParser {
             .iter()
             .map(|new_coin| CoinInfo {
                 parent_coin_info: hex::encode(spend_cond.coin_id.as_ref()),
-                puzzle_hash: hex::encode(&new_coin.puzzle_hash),
+                puzzle_hash: hex::encode(new_coin.puzzle_hash),
                 amount: new_coin.amount,
             })
             .collect()
@@ -460,11 +461,9 @@ impl BlockParser {
         })
     }
 
-    /*
     /// Parse generator from hex string
     pub fn parse_generator_from_hex(&self, generator_hex: &str) -> Result<ParsedGenerator> {
-        let generator_bytes =
-            hex::decode(generator_hex).map_err(|e| ParseError::HexDecodingError(e))?;
+        let generator_bytes = hex::decode(generator_hex)?;
         self.parse_generator_from_bytes(&generator_bytes)
     }
 
@@ -492,7 +491,7 @@ impl BlockParser {
             w == [0x01, 0x00] || // pair
             w == [0x02, 0x00] || // cons
             w == [0x03, 0x00] || // first
-            w == [0x04, 0x00]    // rest
+            w == [0x04, 0x00] // rest
         });
 
         // Check for coin patterns (32-byte sequences)
@@ -506,7 +505,8 @@ impl BlockParser {
 
         let total = generator_bytes.len() as f64;
         let entropy = if total > 0.0 {
-            byte_counts.iter()
+            byte_counts
+                .iter()
                 .filter(|&&count| count > 0)
                 .map(|&count| {
                     let p = count as f64 / total;
@@ -525,7 +525,6 @@ impl BlockParser {
             entropy,
         })
     }
-    */
 
     /// Calculate Shannon entropy of data
     #[allow(dead_code)]

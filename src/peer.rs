@@ -9,11 +9,11 @@ use futures_util::{SinkExt, StreamExt};
 use std::net::IpAddr;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::{
     connect_async_tls_with_config, tungstenite::Message as WsMessage, Connector, MaybeTlsStream,
     WebSocketStream,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -181,7 +181,9 @@ impl PeerConnection {
                 msg = ws_stream.next() => msg,
             };
 
-            let Some(msg) = next_msg else { break; };
+            let Some(msg) = next_msg else {
+                break;
+            };
             match msg {
                 Ok(WsMessage::Binary(data)) => {
                     match chia_protocol::Message::from_bytes(&data) {
@@ -245,12 +247,11 @@ impl PeerConnection {
                                             // Parse the block using chia-generator-parser
                                             match Self::parse_block(block).await {
                                                 Ok(parsed_block) => {
-                                                    if let Err(e) =
-                                                        event_sender
-                                                            .send(StreamEvent::ParsedBlock(
-                                                                parsed_block,
-                                                            ))
-                                                            .await
+                                                    if let Err(e) = event_sender
+                                                        .send(StreamEvent::ParsedBlock(
+                                                            parsed_block,
+                                                        ))
+                                                        .await
                                                     {
                                                         error!(
                                                             "Failed to send parsed block through channel: {}",

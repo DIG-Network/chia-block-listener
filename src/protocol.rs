@@ -80,7 +80,8 @@ impl Message {
         }
 
         let mut msg_type_bytes_parse_cursor = std::io::Cursor::new(&bytes[0..1]);
-        let msg_type = ProtocolMessageTypes::parse::<false>(&mut msg_type_bytes_parse_cursor).map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to parse message type"))?;
+        let msg_type = ProtocolMessageTypes::parse::<false>(&mut msg_type_bytes_parse_cursor)
+            .map_err(|_| Error::new(ErrorKind::InvalidData, "Failed to parse message type"))?;
         let has_id = bytes[1] != 0;
 
         let (id, data_start) = if has_id {
@@ -106,11 +107,7 @@ impl Message {
             return Err(Error::new(ErrorKind::InvalidData, "Data length mismatch"));
         }
 
-        Ok(Self {
-            msg_type,
-            id,
-            data,
-        })
+        Ok(Self { msg_type, id, data })
     }
 }
 

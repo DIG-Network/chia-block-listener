@@ -153,6 +153,29 @@ pub struct BlockHeightInfo {
     pub is_transaction_block: bool,
 }
 
+/// Analysis information about a generator's bytecode
+#[derive(Debug, Clone)]
+pub struct GeneratorAnalysis {
+    /// Total size in bytes
+    pub size_bytes: usize,
+    /// Whether the bytecode is empty
+    pub is_empty: bool,
+    /// Heuristic: presence of common CLVM opcode patterns
+    pub contains_clvm_patterns: bool,
+    /// Heuristic: presence of 32-byte sequences typical for coins
+    pub contains_coin_patterns: bool,
+    /// Shannon entropy estimate
+    pub entropy: f64,
+}
+
+/// Result of parsing a generator, including basic analysis and block context
+#[derive(Debug, Clone)]
+pub struct ParsedGenerator {
+    pub block_info: GeneratorBlockInfo,
+    pub generator_hex: Option<String>,
+    pub analysis: GeneratorAnalysis,
+}
+
 impl BlockHeightInfo {
     pub fn new(height: Uint32, is_transaction_block: bool) -> Self {
         Self {

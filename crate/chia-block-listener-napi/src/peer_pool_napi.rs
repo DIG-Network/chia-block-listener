@@ -1,9 +1,9 @@
+use crate::event_emitter::BlockReceivedEvent;
 use chia_block_listener::types::{
     BlockReceivedEvent as CoreBlockReceivedEvent, NewPeakHeightEvent, PeerConnectedEvent,
     PeerDisconnectedEvent,
 };
 use chia_block_listener::{BlockListener, BlockListenerConfig};
-use crate::event_emitter::BlockReceivedEvent;
 use napi::bindgen_prelude::*;
 use napi::{
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
@@ -38,7 +38,8 @@ impl ChiaPeerPool {
             new_peak_height_listeners: Vec::new(),
         }));
 
-        let listener = Arc::new(BlockListener::new(BlockListenerConfig::default()).expect("listener init"));
+        let listener =
+            Arc::new(BlockListener::new(BlockListenerConfig::default()).expect("listener init"));
 
         // Subscribe to core events and forward relevant ones to JS listeners
         let mut rx = listener.subscribe();
@@ -49,14 +50,23 @@ impl ChiaPeerPool {
                     Ok(ev) => {
                         match ev {
                             chia_block_listener::types::Event::PeerConnected(pc) => {
-                                let js = PeerConnectedEvent { peer_id: pc.peer_id, host: pc.host, port: pc.port };
+                                let js = PeerConnectedEvent {
+                                    peer_id: pc.peer_id,
+                                    host: pc.host,
+                                    port: pc.port,
+                                };
                                 let guard = listeners_for_task.read().await;
                                 for l in &guard.peer_connected_listeners {
                                     l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking);
                                 }
                             }
                             chia_block_listener::types::Event::PeerDisconnected(pd) => {
-                                let js = PeerDisconnectedEvent { peer_id: pd.peer_id, host: pd.host, port: pd.port, message: pd.message };
+                                let js = PeerDisconnectedEvent {
+                                    peer_id: pd.peer_id,
+                                    host: pd.host,
+                                    port: pd.port,
+                                    message: pd.message,
+                                };
                                 let guard = listeners_for_task.read().await;
                                 for l in &guard.peer_disconnected_listeners {
                                     l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking);
@@ -81,7 +91,10 @@ impl ChiaPeerPool {
             }
         });
 
-        Self { listener, listeners }
+        Self {
+            listener,
+            listeners,
+        }
     }
 
     #[napi(js_name = "addPeer")]

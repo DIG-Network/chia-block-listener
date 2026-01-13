@@ -1,4 +1,4 @@
-use chia_block_listener::types::{Event as CoreEvent, BlockReceivedEvent as CoreBlockEvent};
+use chia_block_listener::types::{BlockReceivedEvent as CoreBlockEvent, Event as CoreEvent};
 use chia_block_listener::BlockListener;
 use napi::{
     bindgen_prelude::*,
@@ -118,7 +118,10 @@ pub struct CoinSpend {
 impl ChiaBlockListener {
     #[napi(constructor)]
     pub fn new() -> Self {
-        let core_listener = Arc::new(BlockListener::new(chia_block_listener::types::BlockListenerConfig::default()).expect("listener init"));
+        let core_listener = Arc::new(
+            BlockListener::new(chia_block_listener::types::BlockListenerConfig::default())
+                .expect("listener init"),
+        );
 
         let inner = Arc::new(RwLock::new(ChiaBlockListenerInner {
             listener: core_listener.clone(),
@@ -142,24 +145,40 @@ impl ChiaBlockListener {
                                     guard.block_listeners.clone()
                                 };
                                 for listener in listeners {
-                                    listener.call(js_block.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                    listener.call(
+                                        js_block.clone(),
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
                                 }
                             }
                             CoreEvent::PeerConnected(pc) => {
-                                let js = PeerConnectedEvent { peer_id: pc.peer_id, host: pc.host, port: pc.port };
+                                let js = PeerConnectedEvent {
+                                    peer_id: pc.peer_id,
+                                    host: pc.host,
+                                    port: pc.port,
+                                };
                                 let listeners = {
                                     let guard = inner_for_task.read().await;
                                     guard.peer_connected_listeners.clone()
                                 };
-                                for l in listeners { l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking); }
+                                for l in listeners {
+                                    l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                }
                             }
                             CoreEvent::PeerDisconnected(pd) => {
-                                let js = PeerDisconnectedEvent { peer_id: pd.peer_id, host: pd.host, port: pd.port, message: pd.message };
+                                let js = PeerDisconnectedEvent {
+                                    peer_id: pd.peer_id,
+                                    host: pd.host,
+                                    port: pd.port,
+                                    message: pd.message,
+                                };
                                 let listeners = {
                                     let guard = inner_for_task.read().await;
                                     guard.peer_disconnected_listeners.clone()
                                 };
-                                for l in listeners { l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking); }
+                                for l in listeners {
+                                    l.call(js.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+                                }
                             }
                             CoreEvent::NewPeakHeight(_np) => {
                                 // This adapter does not expose newPeakHeight on this class; handled in ChiaPeerPool if needed
@@ -199,11 +218,12 @@ impl ChiaBlockListener {
         let inner = self.inner.clone();
         rt.block_on(async move {
             let guard = inner.read().await;
-            guard
-                .listener
-                .remove_peer(peer_id)
-                .await
-                .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to disconnect peer: {e}")))
+            guard.listener.remove_peer(peer_id).await.map_err(|e| {
+                Error::new(
+                    Status::GenericFailure,
+                    format!("Failed to disconnect peer: {e}"),
+                )
+            })
         })
     }
 
@@ -464,7 +484,9 @@ impl ChiaBlockListener {
                 .listener
                 .get_block_by_height(height as u64)
                 .await
-                .map_err(|e| Error::new(Status::GenericFailure, format!("Failed to get block: {e}")))?;
+                .map_err(|e| {
+                    Error::new(Status::GenericFailure, format!("Failed to get block: {e}"))
+                })?;
             Ok(convert_core_block_to_js(core_block))
         })
     }

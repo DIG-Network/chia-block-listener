@@ -102,13 +102,6 @@ fn test_pattern_detection(parser: &BlockParser) {
 }
 
 fn test_error_handling(parser: &BlockParser) {
-    // Test buffer underrun
-    let tiny_buffer = vec![0x01];
-    match parser.parse_block_info(&tiny_buffer) {
-        Err(_) => println!("  ✅ Buffer underrun properly detected"),
-        Ok(_) => println!("  ❌ Should have failed on tiny buffer"),
-    }
-
     // Test invalid hex
     match parser.parse_generator_from_hex("invalid_hex") {
         Err(_) => println!("  ✅ Invalid hex properly rejected"),

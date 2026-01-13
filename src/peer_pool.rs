@@ -1,10 +1,10 @@
 use crate::error::ChiaError;
-use crate::types::{
-    BlockReceivedEvent, CoinRecord, CoinSpend, NewPeakHeightEvent, PeerConnectedEvent,
-    PeerDisconnectedEvent, Event,
-};
 use crate::peer::PeerConnection;
 use crate::peer::StreamEvent;
+use crate::types::{
+    BlockReceivedEvent, CoinRecord, CoinSpend, Event, NewPeakHeightEvent, PeerConnectedEvent,
+    PeerDisconnectedEvent,
+};
 use chia_generator_parser::{BlockParser, ParsedBlock};
 use chia_protocol::FullBlock;
 
@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
-use tokio_util::sync::CancellationToken;
 use tokio::time::timeout;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 const RATE_LIMIT_MS: u64 = 500; // 500ms cooldown between peer usage
@@ -42,7 +42,7 @@ struct PeerWorkerParams {
 }
 
 pub struct ChiaPeerPool {
-    inner: Arc<RwLock<ChiaPeerPoolInner>>, 
+    inner: Arc<RwLock<ChiaPeerPoolInner>>,
     request_sender: mpsc::Sender<PoolRequest>,
     cancel_token: CancellationToken,
     tasks: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -84,6 +84,12 @@ struct WorkerConnection {
     is_healthy: bool,
 }
 
+impl Default for ChiaPeerPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChiaPeerPool {
     pub fn new() -> Self {
         let (request_sender, request_receiver) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
@@ -108,7 +114,10 @@ impl ChiaPeerPool {
         pool
     }
 
-    pub fn new_with_event_sink(event_tx: mpsc::Sender<Event>, cancel_token: CancellationToken) -> Self {
+    pub fn new_with_event_sink(
+        event_tx: mpsc::Sender<Event>,
+        cancel_token: CancellationToken,
+    ) -> Self {
         let (request_sender, request_receiver) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
         let inner = Arc::new(RwLock::new(ChiaPeerPoolInner {
             peers: HashMap::new(),
@@ -192,7 +201,9 @@ impl ChiaPeerPool {
                         peer_conn_for_stream.connect(),
                     )
                     .await
-                    .map_err(|_| ChiaError::Connection("Stream connection timeout".to_string()))??;
+                    .map_err(|_| {
+                        ChiaError::Connection("Stream connection timeout".to_string())
+                    })??;
 
                     timeout(
                         Duration::from_millis(CONNECTION_TIMEOUT_MS),
@@ -207,7 +218,8 @@ impl ChiaPeerPool {
                 match stream_conn.await {
                     Ok(ws_stream) => {
                         // Set up a small channel to receive StreamEvents from the reader loop
-                        let (stream_tx, mut stream_rx) = mpsc::channel::<StreamEvent>(REQUEST_CHANNEL_CAPACITY);
+                        let (stream_tx, mut stream_rx) =
+                            mpsc::channel::<StreamEvent>(REQUEST_CHANNEL_CAPACITY);
 
                         // Spawn the reader loop
                         let reader_cancel = cancel_for_stream.clone();
@@ -233,7 +245,7 @@ impl ChiaPeerPool {
                                                 &parsed,
                                                 reader_peer_id.clone(),
                                             );
-                                            let mut send_fut = tx_stream_clone.send(Event::BlockReceived(block_event));
+                                            let send_fut = tx_stream_clone.send(Event::BlockReceived(block_event));
                                             tokio::pin!(send_fut);
                                             tokio::select! {
                                                 _ = cancel_for_stream.cancelled() => { break; }
@@ -258,21 +270,28 @@ impl ChiaPeerPool {
                         let _ = reader_handle.await;
 
                         // Emit disconnect best-effort
-                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
-                            peer_id: reader_peer_id.clone(),
-                            host: reader_host.clone(),
-                            port: port as u32,
-                            message: Some("Stream closed".to_string()),
-                        }));
+                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(
+                            PeerDisconnectedEvent {
+                                peer_id: reader_peer_id.clone(),
+                                host: reader_host.clone(),
+                                port: port as u32,
+                                message: Some("Stream closed".to_string()),
+                            },
+                        ));
                     }
                     Err(e) => {
-                        error!("Failed to start streaming for {}: {}", peer_id_for_stream, e);
-                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
-                            peer_id: peer_id_for_stream.clone(),
-                            host: host_for_stream.clone(),
-                            port: port as u32,
-                            message: Some(format!("Stream failed: {e}")),
-                        }));
+                        error!(
+                            "Failed to start streaming for {}: {}",
+                            peer_id_for_stream, e
+                        );
+                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(
+                            PeerDisconnectedEvent {
+                                peer_id: peer_id_for_stream.clone(),
+                                host: host_for_stream.clone(),
+                                port: port as u32,
+                                message: Some(format!("Stream failed: {e}")),
+                            },
+                        ));
                     }
                 }
             });
@@ -400,8 +419,12 @@ impl ChiaPeerPool {
                     return Err(ChiaError::Other("shutting down".to_string()));
                 }
 
-                if let Err(e) = self.request_sender
-                    .send(PoolRequest::GetBlockByHeight { height, response_tx })
+                if let Err(e) = self
+                    .request_sender
+                    .send(PoolRequest::GetBlockByHeight {
+                        height,
+                        response_tx,
+                    })
                     .await
                 {
                     warn!("Failed to send request to peer {}: {}", peer_id, e);
@@ -666,7 +689,7 @@ impl ChiaPeerPool {
                                                                                                 );
                                                                                                 // Ensure BlockReceived is reliably submitted to the core event pipeline.
                                                                                                 if let Some(tx) = &event_tx2 {
-                                                                                                    let mut send_fut = tx.send(Event::BlockReceived(block_event.clone()));
+                                                                                                    let send_fut = tx.send(Event::BlockReceived(block_event.clone()));
                                                                                                     tokio::pin!(send_fut);
                                                                                                     tokio::select! {
                                                                                                         _ = cancel2.cancelled() => {
@@ -756,7 +779,8 @@ impl ChiaPeerPool {
         let mut connection_failures = 0;
         let mut last_connection_attempt = Instant::now() - Duration::from_secs(60);
         const MAX_CONNECTION_FAILURES: u32 = WORKER_MAX_CONNECTION_FAILURES;
-        const CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(WORKER_CONNECTION_RETRY_DELAY_SECS);
+        const CONNECTION_RETRY_DELAY: Duration =
+            Duration::from_secs(WORKER_CONNECTION_RETRY_DELAY_SECS);
 
         loop {
             let next = tokio::select! {
@@ -767,7 +791,9 @@ impl ChiaPeerPool {
                 maybe = receiver.recv() => maybe
             };
 
-            let Some(request) = next else { break; };
+            let Some(request) = next else {
+                break;
+            };
 
             match request {
                 WorkerRequest::GetBlock {
@@ -808,7 +834,8 @@ impl ChiaPeerPool {
                             last_connection_attempt = Instant::now();
 
                             if params.cancel.is_cancelled() {
-                                let _ = response_tx.send(Err(ChiaError::Other("shutting down".into())));
+                                let _ =
+                                    response_tx.send(Err(ChiaError::Other("shutting down".into())));
                                 continue;
                             }
 
@@ -950,9 +977,14 @@ impl ChiaPeerPool {
             }
         }
 
-        if let Some(tx) = &params.event_tx { let _ = tx.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
-            peer_id: params.peer_id.clone(), host: params.host.clone(), port: params.port as u32, message: Some("Worker shutdown".to_string())
-        })); }
+        if let Some(tx) = &params.event_tx {
+            let _ = tx.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
+                peer_id: params.peer_id.clone(),
+                host: params.host.clone(),
+                port: params.port as u32,
+                message: Some("Worker shutdown".to_string()),
+            }));
+        }
     }
 
     async fn establish_connection(

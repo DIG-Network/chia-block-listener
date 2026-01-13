@@ -1,7 +1,7 @@
 use crate::dns_discovery::DnsDiscoveryClient;
 use crate::error::ChiaError;
 use crate::peer_pool::ChiaPeerPool;
-use crate::types::{Event, BlockListenerConfig};
+use crate::types::{BlockListenerConfig, Event};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -118,14 +118,21 @@ impl BlockListener {
 
                 let mut any_attempted = false;
 
-                for peer in discovery.ipv4_peers.iter().chain(discovery.ipv6_peers.iter()) {
+                for peer in discovery
+                    .ipv4_peers
+                    .iter()
+                    .chain(discovery.ipv6_peers.iter())
+                {
                     if cancel.is_cancelled() {
                         return Err(ChiaError::Other("shutting down".into()));
                     }
                     any_attempted = true;
                     let host = peer.host.to_string();
                     let port = peer.port;
-                    match pool.add_peer(host.clone(), port, config.network_id.clone()).await {
+                    match pool
+                        .add_peer(host.clone(), port, config.network_id.clone())
+                        .await
+                    {
                         Ok(_) => {
                             tracing::info!("auto_reconnect: connected to {host}:{port}");
                             return Ok(());
@@ -142,9 +149,6 @@ impl BlockListener {
                     Err(ChiaError::Connection("All discovered peers failed".into()))
                 }
             }
-
-            let mut retry = 0u32;
-
             // initial connect attempt only if no peers connected
             if let Ok(peers) = pool.get_connected_peers().await {
                 if peers.is_empty() {
@@ -161,7 +165,7 @@ impl BlockListener {
                                 // Check if any peers remain; if none, attempt reconnect sequence
                                 if let Ok(peers) = pool.get_connected_peers().await {
                                     if peers.is_empty() {
-                                        retry = 0;
+                                        let mut retry: u32 = 0;
                                         while retry < config.max_auto_reconnect_retries {
                                             if cancel.is_cancelled() { break; }
                                             match try_connect_once(&dns_client, &pool, &config, &cancel).await {
@@ -185,9 +189,7 @@ impl BlockListener {
                                     }
                                 }
                             }
-                            Ok(Event::PeerConnected(_)) => {
-                                retry = 0; // reset on success
-                            }
+                            Ok(Event::PeerConnected(_)) => {}
                             _ => {}
                         }
                     }
