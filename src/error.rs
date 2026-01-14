@@ -30,9 +30,3 @@ impl From<tokio_tungstenite::tungstenite::Error> for ChiaError {
         ChiaError::WebSocket(Box::new(err))
     }
 }
-
-impl From<ChiaError> for napi::Error {
-    fn from(err: ChiaError) -> Self {
-        napi::Error::from_reason(err.to_string())
-    }
-}

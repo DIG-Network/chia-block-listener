@@ -3,17 +3,12 @@ name = "chia-block-listener"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-crate-type = ["cdylib"]
-
 [dependencies]
-# NAPI-rs for Node.js bindings
-napi = { version = "2", features = ["napi9", "tokio_rt", "async"] }
-napi-derive = "2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
+tokio-util = "0.7"
 
 # Chia-related dependencies
 chia-protocol = "0.26"
@@ -40,7 +35,14 @@ chia-generator-parser = { path = "./crate/chia-generator-parser" }
 dns-discovery = { path = "./crate/dns-discovery" }
 
 [build-dependencies]
-napi-build = "2"
 
 [profile.release]
 lto = true
+
+[workspace]
+members = [
+    ".",
+    "crate/chia-generator-parser",
+    "crate/dns-discovery",
+    "crate/chia-block-listener-napi",
+]

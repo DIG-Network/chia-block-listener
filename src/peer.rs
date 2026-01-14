@@ -13,6 +13,7 @@ use tokio_tungstenite::{
     connect_async_tls_with_config, tungstenite::Message as WsMessage, Connector, MaybeTlsStream,
     WebSocketStream,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -22,6 +23,12 @@ pub struct PeerConnection {
     host: String,
     port: u16,
     network_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub enum StreamEvent {
+    ParsedBlock(ParsedBlock),
+    NewPeak(u32),
 }
 
 impl PeerConnection {
@@ -163,11 +170,20 @@ impl PeerConnection {
 
     pub async fn listen_for_blocks(
         mut ws_stream: WebSocket,
-        block_sender: mpsc::Sender<ParsedBlock>,
+        event_sender: mpsc::Sender<StreamEvent>,
+        cancel: CancellationToken,
     ) -> Result<(), ChiaError> {
         info!("Listening for blocks and messages");
 
-        while let Some(msg) = ws_stream.next().await {
+        loop {
+            let next_msg = tokio::select! {
+                _ = cancel.cancelled() => break,
+                msg = ws_stream.next() => msg,
+            };
+
+            let Some(msg) = next_msg else {
+                break;
+            };
             match msg {
                 Ok(WsMessage::Binary(data)) => {
                     match chia_protocol::Message::from_bytes(&data) {
@@ -181,6 +197,13 @@ impl PeerConnection {
                                             "New peak at height {} from wallet perspective",
                                             new_peak.height
                                         );
+
+                                        // Emit new peak notification (best-effort)
+                                        if let Err(e) = event_sender
+                                            .try_send(StreamEvent::NewPeak(new_peak.height))
+                                        {
+                                            warn!("Failed to queue new peak event: {}", e);
+                                        }
 
                                         // Request the full block
                                         let request = RequestBlock {
@@ -224,8 +247,11 @@ impl PeerConnection {
                                             // Parse the block using chia-generator-parser
                                             match Self::parse_block(block).await {
                                                 Ok(parsed_block) => {
-                                                    if let Err(e) =
-                                                        block_sender.send(parsed_block).await
+                                                    if let Err(e) = event_sender
+                                                        .send(StreamEvent::ParsedBlock(
+                                                            parsed_block,
+                                                        ))
+                                                        .await
                                                     {
                                                         error!(
                                                             "Failed to send parsed block through channel: {}",

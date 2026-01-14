@@ -2,10 +2,10 @@
 # yarn lockfile v1
 
 
-"@dignetwork/datalayer-driver-win32-x64-msvc@0.1.35":
+"@dignetwork/datalayer-driver-linux-x64-gnu@0.1.35":
   version "0.1.35"
-  resolved "https://registry.npmjs.org/@dignetwork/datalayer-driver-win32-x64-msvc/-/datalayer-driver-win32-x64-msvc-0.1.35.tgz"
-  integrity sha512-ZfISmET8X4ypc8zD22MSkDVBjaPu3BbjPuEcI4EmDdRpo8gpuuDL5SHMPk0kYYlcLUkNLGFtBfs1epLXkEV6wA==
+  resolved "https://registry.npmjs.org/@dignetwork/datalayer-driver-linux-x64-gnu/-/datalayer-driver-linux-x64-gnu-0.1.35.tgz"
+  integrity sha512-rPodZWPVPFCFcvZ3LYmo8BRl31AhkbRYlwsDixXbgDmUa70VcObyLuOVCNa8RTKFh48H4vjFuGFqkFkuJW/hIw==
 
 "@dignetwork/datalayer-driver@^0.1.35":
   version "0.1.35"

@@ -1,4 +1,4 @@
-use chia_generator_parser::{BlockHeightInfo, BlockParser, GeneratorBlockInfo, ParsedGenerator};
+use chia_generator_parser::BlockParser;
 
 fn main() {
     // Initialize the parser
@@ -23,7 +23,7 @@ fn main() {
                 parsed_generator.analysis.contains_coin_patterns
             );
             println!("  Entropy: {:.2}", parsed_generator.analysis.entropy);
-            println!("  Block info: {}", parsed_generator.block_info);
+            println!("  Block info: {:?}", parsed_generator.block_info);
         }
         Err(e) => {
             eprintln!("Error parsing generator: {}", e);

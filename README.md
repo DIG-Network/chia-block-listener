@@ -68,6 +68,123 @@ process.on('SIGINT', () => {
   process.exit(0)
 })
 ```
+
+## Rust usage (canonical, Rust-first interface)
+
+This repository now provides a pure Rust API suitable for use in Tokio-based applications, while the N-API adapter remains a thin layer for Node.js. The Rust-facing entry point is `BlockListener` (previously named `Listener`).
+
+Key points of the Rust API:
+- Your application owns the policy/event loop. The library only manages networking, peers, and event emission.
+- Subscribe to events via a bounded broadcast channel. Delivery is best-effort; slow consumers may miss messages, which is appropriate for catch-up/skip logic.
+- Structured shutdown: signal cancellation quickly and optionally wait for all internal tasks to complete.
+
+Example:
+
+```rust
+use chia_block_listener::{init_tracing, BlockListener, ListenerConfig};
+use chia_block_listener::types::Event;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Optional: enable logging
+    init_tracing();
+
+    // Configure and create the block listener (buffer defaults to 1024)
+    let block_listener = BlockListener::new(ListenerConfig::default())?;
+
+    // Subscribe to events (bounded, best-effort delivery)
+    let rx = block_listener.subscribe();
+    let mut events = BroadcastStream::new(rx);
+
+    // Connect a peer
+    let _peer_id = block_listener.add_peer("localhost".into(), 8444, "mainnet".into()).await?;
+
+    // Application-owned policy loop: read events and act
+    let policy = tokio::spawn(async move {
+        while let Some(item) = events.next().await {
+            match item {
+                Ok(Event::PeerConnected(e)) => {
+                    println!("connected: {} ({}:{})", e.peer_id, e.host, e.port);
+                }
+                Ok(Event::PeerDisconnected(e)) => {
+                    println!("disconnected: {} reason={:?}", e.peer_id, e.message);
+                }
+                Ok(Event::NewPeakHeight(e)) => {
+                    println!("new peak: old={:?} new={} from {}", e.old_peak, e.new_peak, e.peer_id);
+                }
+                Ok(Event::BlockReceived(b)) => {
+                    println!("block {} {}", b.height, b.header_hash);
+                }
+                Err(_lagged) => {
+                    // One or more messages were missed (slow consumer). Best-effort model: recompute current state if needed.
+                    // For catch-up use cases, you generally only need latest peak or most recent block.
+                }
+            }
+        }
+    });
+
+    // Shutdown example (e.g., on SIGINT/SIGTERM):
+    // Signal fast
+    block_listener.shutdown().await?;
+    // Wait for all internal tasks to end deterministically
+    block_listener.shutdown_and_wait().await?;
+
+    policy.await?;
+    Ok(())
+}
+```
+
+### Backpressure and delivery guarantees
+- The core guarantees that parsed blocks are submitted into the internal event pipeline (no pre-broadcast drop). Blocks are enqueued with backpressure inside the pool and forwarded to the broadcast dispatcher.
+- Event broadcast to subscribers uses a bounded buffer (default 1024). If a subscriber is slow, it may receive `Lagged(n)` from the stream wrapper, meaning it missed `n` events. This affects slow subscribers only and does not cause block events to be dropped before entering the broadcast.
+- Informational events (peerConnected, peerDisconnected, newPeakHeight) are best-effort before broadcast and may be dropped under overload to avoid stalling networking.
+- Recommended approach for “catch-up” logic: maintain your own application state keyed by height/epoch and cancel/work-skip as newer events arrive. If you need every block for historical processing, use explicit queries like `get_block_by_height`/ranges in addition to the live stream.
+
+### Passive WebSocket listening and multi-peer behavior
+- **Listener, not poller:** Each `add_peer` establishes a dedicated streaming WebSocket reader (per peer) that passively consumes protocol messages and drives events. `NewPeakWallet` triggers a `RequestBlock` immediately; `RespondBlock` is parsed and emitted as `Event::BlockReceived` via the core event pipeline.
+- **Unified event pipeline:** All live events (`PeerConnected`, `PeerDisconnected`, `NewPeakHeight`, `BlockReceived`) flow through a single core mpsc sink and are forwarded to all subscribers via `broadcast`. Blocks use `send().await` into the sink (no pre-broadcast drop); informational events are best-effort `try_send` to avoid stalling I/O.
+- **Multiple peers:** You can call `add_peer` multiple times. The pool tracks each peer independently with its own streaming reader and request worker. On-demand requests (`get_block_by_height`) use round-robin with cooldown and remove unhealthy peers based on repeated failures/timeouts/protocol errors.
+- **Consumption pattern:** Your app owns the policy loop—subscribe once, then react to events as they arrive. Slow subscribers may receive `Lagged(n)` from the broadcast wrapper; recompute state as needed. For guaranteed historical coverage, pair live listening with explicit `get_block_by_height` / range queries.
+- **Shutdown:** `shutdown()` signals cancellation; `shutdown_and_wait()` awaits the dispatcher and all tracked peer/request tasks for deterministic teardown. `Drop` on `Listener` signals cancel without awaiting (non-blocking drop safety).
+
+### Auto-reconnect (DNS-driven, Rust API)
+- **Opt-in via config:** Set `BlockListenerConfig { auto_reconnect: true, network_id, default_port, max_auto_reconnect_retries, .. }` when constructing `BlockListener`.
+- **When it runs:** The auto-reconnect task starts on the first `subscribe()` call. It keeps one active peer for you; manual `add_peer` calls still work and can coexist.
+- **How it works:**
+  - Uses the core DNS introducers for the configured `network_id` (default `mainnet`) and `default_port` (default `8444`).
+  - On startup (if no peers connected) or when all peers disconnect, it runs discovery, shuffles the results, and tries each peer in the batch until one connects.
+  - If a peer disconnects and none remain, discovery is rerun and peers are retried in batches up to `max_auto_reconnect_retries` (default 10 batches). Failure after all retries surfaces a best-effort `PeerDisconnected` event with an explanatory message.
+- **Backpressure & events:** Once connected, live events still flow through the same sink → broadcast pipeline; block delivery guarantees and backpressure semantics remain unchanged.
+- **Example:**
+```rust
+use chia_block_listener::{BlockListener, BlockListenerConfig};
+
+let config = BlockListenerConfig {
+    auto_reconnect: true,
+    network_id: "mainnet".into(),
+    default_port: 8444,
+    max_auto_reconnect_retries: 10,
+    buffer: 1024,
+};
+
+let listener = BlockListener::new(config)?;
+let mut rx = listener.subscribe(); // kicks off auto-reconnect
+```
+
+### Shutdown semantics
+- `shutdown()` signals cancellation and returns quickly.
+- `shutdown_and_wait()` cancels and then awaits all internal tasks to finish (peer workers, request processor, dispatchers), providing deterministic shutdown.
+
+### Configuration
+- `BlockListenerConfig` exposes:
+  - `buffer` (event buffer per subscriber, default 1024)
+  - `auto_reconnect` (enable DNS-based single-peer maintenance)
+  - `network_id` (e.g., `mainnet`, `testnet11`; used for DNS discovery)
+  - `default_port` (port used for discovered peers, default 8444)
+  - `max_auto_reconnect_retries` (discovery batches to attempt before surfacing an error event, default 10)
+- Additional knobs (timeouts, rate limits, etc.) are centralized in the core with sensible defaults and named constants.
 ## API Reference
 
 ### ChiaBlockListener Class

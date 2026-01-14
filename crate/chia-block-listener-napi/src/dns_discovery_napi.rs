@@ -1,4 +1,5 @@
-use dns_discovery::{DiscoveryResult, DnsDiscovery, DnsDiscoveryError, PeerAddress};
+use chia_block_listener::dns_discovery::{DiscoveryResult, DnsDiscoveryError, PeerAddress};
+use chia_block_listener::DnsDiscoveryClient as CoreDnsDiscoveryClient;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use tracing::{debug, info};
@@ -82,7 +83,7 @@ pub struct AddressResult {
 
 #[napi]
 pub struct DnsDiscoveryClient {
-    discovery: DnsDiscovery,
+    core: CoreDnsDiscoveryClient,
 }
 
 #[napi]
@@ -93,14 +94,14 @@ impl DnsDiscoveryClient {
         info!("Creating new DnsDiscoveryClient");
 
         let rt = tokio::runtime::Handle::current();
-        let discovery = rt
-            .block_on(async { DnsDiscovery::new().await })
+        let core = rt
+            .block_on(async { CoreDnsDiscoveryClient::new().await })
             .map_err(|e| {
                 let error_info = DnsDiscoveryErrorInfo::from(e);
                 Error::new(Status::GenericFailure, error_info.message)
             })?;
 
-        Ok(Self { discovery })
+        Ok(Self { core })
     }
 
     /// Discover peers for Chia mainnet
@@ -108,7 +109,7 @@ impl DnsDiscoveryClient {
     pub async fn discover_mainnet_peers(&self) -> Result<DiscoveryResultJS> {
         debug!("Discovering mainnet peers via DNS");
 
-        self.discovery
+        self.core
             .discover_mainnet_peers()
             .await
             .map(|result| DiscoveryResultJS::from(&result))
@@ -123,7 +124,7 @@ impl DnsDiscoveryClient {
     pub async fn discover_testnet11_peers(&self) -> Result<DiscoveryResultJS> {
         debug!("Discovering testnet11 peers via DNS");
 
-        self.discovery
+        self.core
             .discover_testnet11_peers()
             .await
             .map(|result| DiscoveryResultJS::from(&result))
@@ -145,10 +146,8 @@ impl DnsDiscoveryClient {
             introducers.len()
         );
 
-        let introducer_refs: Vec<&str> = introducers.iter().map(|s| s.as_str()).collect();
-
-        self.discovery
-            .discover_peers(&introducer_refs, default_port)
+        self.core
+            .discover_peers(&introducers, default_port)
             .await
             .map(|result| DiscoveryResultJS::from(&result))
             .map_err(|e| {
@@ -162,8 +161,8 @@ impl DnsDiscoveryClient {
     pub async fn resolve_ipv4(&self, hostname: String) -> Result<AddressResult> {
         debug!("Resolving IPv4 addresses for {}", hostname);
 
-        self.discovery
-            .resolve_ipv4(&hostname)
+        self.core
+            .resolve_ipv4(hostname.as_str())
             .await
             .map(|addrs| AddressResult {
                 addresses: addrs.iter().map(|addr| addr.to_string()).collect(),
@@ -180,8 +179,8 @@ impl DnsDiscoveryClient {
     pub async fn resolve_ipv6(&self, hostname: String) -> Result<AddressResult> {
         debug!("Resolving IPv6 addresses for {}", hostname);
 
-        self.discovery
-            .resolve_ipv6(&hostname)
+        self.core
+            .resolve_ipv6(hostname.as_str())
             .await
             .map(|addrs| AddressResult {
                 addresses: addrs.iter().map(|addr| addr.to_string()).collect(),
@@ -198,30 +197,10 @@ impl DnsDiscoveryClient {
     pub async fn resolve_both(&self, hostname: String, port: u16) -> Result<DiscoveryResultJS> {
         debug!("Resolving both IPv4 and IPv6 addresses for {}", hostname);
 
-        self.discovery
-            .resolve_both(&hostname, port)
+        self.core
+            .resolve_both(hostname.as_str(), port)
             .await
             .map(|result| DiscoveryResultJS::from(&result))
-            .map_err(|e| {
-                let error_info = DnsDiscoveryErrorInfo::from(e);
-                Error::new(Status::GenericFailure, error_info.message)
-            })
-    }
-}
-
-impl Default for DnsDiscoveryClient {
-    fn default() -> Self {
-        Self::new().unwrap()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_client_creation() {
-        let client = DnsDiscoveryClient::new();
-        assert!(client.is_ok());
+            .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
     }
 }

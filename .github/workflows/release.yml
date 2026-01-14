@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install yarn
+        run: corepack enable && corepack prepare yarn@1.22.22 --activate
+
+      - name: Install @napi-rs/cli
+        run: yarn global add @napi-rs/cli@^2.18.4
+
+      - name: Install deps
+        run: yarn install --frozen-lockfile
+
+      - name: Build artifacts
+        run: yarn build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ runner.os }}
+          path: |
+            ./*.node
+            npm/**/package.json
+            npm/**/*.node
+
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install @napi-rs/cli
+        run: npm i -g @napi-rs/cli@^2.18.4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm whoami
+          # build tarballs and publish via napi-rs CLI from sub-crate
+          napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi
+          # publish main package (will reference platform-specific packages)
+          npm publish --access public
+
+  publish-crates:
+    name: Publish crates to crates.io
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo login
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo login "$CARGO_REGISTRY_TOKEN"
+
+      - name: Publish dns-discovery
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: ./crate/dns-discovery
+        run: |
+          cargo publish --no-verify
+
+      - name: Publish chia-generator-parser
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: ./crate/chia-generator-parser
+        run: |
+          cargo publish --no-verify
+
+      - name: Publish chia-block-listener
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish --no-verify
