@@ -14,7 +14,7 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -70,7 +70,7 @@ impl PeerConnection {
         };
 
         let url = format!("wss://{}:{}/ws", host_formatted, self.port);
-        info!("WebSocket URL: {}", url);
+        debug!("WebSocket URL: {}", url);
 
         let (ws_stream, _) = connect_async_tls_with_config(&url, None, false, Some(connector))
             .await
@@ -188,12 +188,12 @@ impl PeerConnection {
                 Ok(WsMessage::Binary(data)) => {
                     match chia_protocol::Message::from_bytes(&data) {
                         Ok(message) => {
-                            debug!("Received message type: {:?}", message.msg_type);
+                            trace!("Received message type: {:?}", message.msg_type);
 
                             match message.msg_type {
                                 ProtocolMessageTypes::NewPeakWallet => {
                                     if let Ok(new_peak) = NewPeakWallet::from_bytes(&message.data) {
-                                        info!(
+                                        debug!(
                                             "New peak at height {} from wallet perspective",
                                             new_peak.height
                                         );
@@ -232,14 +232,14 @@ impl PeerConnection {
 
                                 ProtocolMessageTypes::NewPeak => {
                                     // This is for full nodes - we might see this too
-                                    debug!("Received NewPeak (full node message)");
+                                    trace!("Received NewPeak (full node message)");
                                 }
 
                                 ProtocolMessageTypes::RespondBlock => {
                                     match RespondBlock::from_bytes(&message.data) {
                                         Ok(respond_block) => {
                                             let block = respond_block.block;
-                                            info!(
+                                            debug!(
                                                 "Received block at height {}",
                                                 block.reward_chain_block.height
                                             );
@@ -272,11 +272,11 @@ impl PeerConnection {
                                 }
 
                                 ProtocolMessageTypes::CoinStateUpdate => {
-                                    debug!("Received coin state update");
+                                    trace!("Received coin state update");
                                 }
 
                                 _ => {
-                                    debug!("Received other message type: {:?}", message.msg_type);
+                                    trace!("Received other message type: {:?}", message.msg_type);
                                 }
                             }
                         }
@@ -311,7 +311,7 @@ impl PeerConnection {
 
     /// Parse a FullBlock using chia-generator-parser
     async fn parse_block(block: FullBlock) -> Result<ParsedBlock, ChiaError> {
-        info!(
+        debug!(
             "Parsing block at height {}",
             block.reward_chain_block.height
         );
@@ -322,7 +322,7 @@ impl PeerConnection {
             .parse_full_block(&block)
             .map_err(|e| ChiaError::Protocol(e.to_string()))?;
 
-        info!(
+        debug!(
             "Parsed block {}: {} coin additions, {} coin removals, {} coin spends, generator: {}",
             parsed_block.height,
             parsed_block.coin_additions.len(),
@@ -339,7 +339,7 @@ impl PeerConnection {
         height: u64,
         ws_stream: &mut WebSocket,
     ) -> Result<FullBlock, ChiaError> {
-        info!("Requesting block at height {}", height);
+        debug!("Requesting block at height {}", height);
 
         let request = RequestBlock {
             height: height as u32,
@@ -377,7 +377,7 @@ impl PeerConnection {
                     Ok(WsMessage::Binary(data)) => {
                         match chia_protocol::Message::from_bytes(&data) {
                             Ok(response) => {
-                                debug!(
+                                trace!(
                                     "Received message type: {:?} while waiting for block",
                                     response.msg_type
                                 );
@@ -387,7 +387,7 @@ impl PeerConnection {
                                         match RespondBlock::from_bytes(&response.data) {
                                             Ok(respond_block) => {
                                                 let block = respond_block.block;
-                                                info!(
+                                                debug!(
                                                     "Received block at height {} - transactions_generator: {} bytes, has_foliage_transaction_block: {}",
                                                     block.reward_chain_block.height,
                                                     block.transactions_generator.as_ref().map(|g| g.len()).unwrap_or(0),
@@ -412,16 +412,16 @@ impl PeerConnection {
                                         if let Ok(new_peak) =
                                             NewPeakWallet::from_bytes(&response.data)
                                         {
-                                            debug!("Received NewPeakWallet at height {} while waiting for block", new_peak.height);
+                                            trace!("Received NewPeakWallet at height {} while waiting for block", new_peak.height);
                                         }
                                         continue;
                                     }
                                     ProtocolMessageTypes::CoinStateUpdate => {
-                                        debug!("Received CoinStateUpdate while waiting for block");
+                                        trace!("Received CoinStateUpdate while waiting for block");
                                         continue;
                                     }
                                     _ => {
-                                        debug!("Received other message type while waiting for block: {:?}", response.msg_type);
+                                        trace!("Received other message type while waiting for block: {:?}", response.msg_type);
                                         continue;
                                     }
                                 }
@@ -446,7 +446,7 @@ impl PeerConnection {
                         continue;
                     }
                     Ok(_) => {
-                        debug!("Unexpected WebSocket message type during block request");
+                        trace!("Unexpected WebSocket message type during block request");
                         continue;
                     }
                     Err(e) => {

@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const RATE_LIMIT_MS: u64 = 500; // 500ms cooldown between peer usage
 const REQUEST_TIMEOUT_MS: u64 = 5000; // 5 second timeout for block requests (reduced from 10s)
@@ -434,7 +434,7 @@ impl ChiaPeerPool {
 
                 match response_rx.await {
                     Ok(Ok(block_event)) => {
-                        debug!(
+                        trace!(
                             "Successfully got block {} from peer {} on attempt {}",
                             height,
                             peer_id,
@@ -578,7 +578,7 @@ impl ChiaPeerPool {
                 // Process incoming requests and queued requests more aggressively
                 tokio::select! {
                     _ = cancel.cancelled() => {
-                        debug!("Request processor received cancellation");
+                        trace!("Request processor received cancellation");
                         break;
                     }
                     // Prioritize incoming requests
@@ -589,7 +589,7 @@ impl ChiaPeerPool {
                                 request_queue.push_back(request);
                             }
                             None => {
-                                debug!("Request processor channel closed");
+                                trace!("Request processor channel closed");
                                 break;
                             }
                         }
