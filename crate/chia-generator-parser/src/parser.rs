@@ -25,7 +25,7 @@ use clvmr::{
     Allocator, NodePtr,
 };
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 /// Block parser that extracts generator information from FullBlock structures
 pub struct BlockParser {
@@ -39,7 +39,7 @@ impl BlockParser {
 
     /// Parse a FullBlock directly instead of bytes
     pub fn parse_full_block(&self, block: &FullBlock) -> Result<ParsedBlock> {
-        info!(
+        debug!(
             "Parsing FullBlock at height {}",
             block.reward_chain_block.height
         );
@@ -133,7 +133,7 @@ impl BlockParser {
         _block_refs: &[u32],
         _height: u32,
     ) -> Result<(Vec<CoinInfo>, Vec<CoinSpendInfo>, Vec<CoinInfo>)> {
-        info!("Processing generator for coins using CLVM execution");
+        debug!("Processing generator for coins using CLVM execution");
 
         if generator_bytes.is_empty() {
             return Ok((Vec::new(), Vec::new(), Vec::new()));
@@ -156,7 +156,7 @@ impl BlockParser {
         let generator_node = match node_from_bytes_backrefs(&mut allocator, generator_bytes) {
             Ok(node) => node,
             Err(e) => {
-                info!("Failed to parse generator: {:?}", e);
+                debug!("Failed to parse generator: {:?}", e);
                 return Ok((Vec::new(), Vec::new(), Vec::new()));
             }
         };
@@ -165,7 +165,7 @@ impl BlockParser {
         let args = match setup_generator_args(&mut allocator, &generator_refs) {
             Ok(args) => args,
             Err(e) => {
-                info!("Failed to setup generator args: {:?}", e);
+                debug!("Failed to setup generator args: {:?}", e);
                 return Ok((Vec::new(), Vec::new(), Vec::new()));
             }
         };
@@ -175,7 +175,7 @@ impl BlockParser {
             match self.run_generator(&mut allocator, generator_node, args, max_cost, flags) {
                 Ok(output) => output,
                 Err(e) => {
-                    info!("Failed to run generator: {:?}", e);
+                    debug!("Failed to run generator: {:?}", e);
                     return Ok((Vec::new(), Vec::new(), Vec::new()));
                 }
             };

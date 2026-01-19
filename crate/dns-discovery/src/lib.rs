@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -126,7 +126,7 @@ impl DnsDiscovery {
         introducers: &[&str],
         default_port: u16,
     ) -> Result<DiscoveryResult, DnsDiscoveryError> {
-        info!(
+        debug!(
             "Starting DNS discovery for {} introducers",
             introducers.len()
         );
@@ -134,12 +134,12 @@ impl DnsDiscovery {
         let mut result = DiscoveryResult::new();
 
         for introducer in introducers {
-            info!("Resolving introducer: {}", introducer);
+            debug!("Resolving introducer: {}", introducer);
 
             // Resolve IPv4 addresses (A records)
             match self.resolve_ipv4(introducer).await {
                 Ok(ipv4_addrs) => {
-                    debug!(
+                    trace!(
                         "Found {} IPv4 addresses for {}",
                         ipv4_addrs.len(),
                         introducer
@@ -156,7 +156,7 @@ impl DnsDiscovery {
             // Resolve IPv6 addresses (AAAA records)
             match self.resolve_ipv6(introducer).await {
                 Ok(ipv6_addrs) => {
-                    debug!(
+                    trace!(
                         "Found {} IPv6 addresses for {}",
                         ipv6_addrs.len(),
                         introducer
@@ -178,7 +178,7 @@ impl DnsDiscovery {
         // Shuffle for randomness
         result.shuffle();
 
-        info!(
+        debug!(
             "DNS discovery completed: {} IPv4 peers, {} IPv6 peers, {} total",
             result.ipv4_peers.len(),
             result.ipv6_peers.len(),
@@ -190,12 +190,12 @@ impl DnsDiscovery {
 
     /// Resolve IPv4 addresses (A records) for a hostname
     pub async fn resolve_ipv4(&self, hostname: &str) -> Result<Vec<Ipv4Addr>, DnsDiscoveryError> {
-        debug!("Performing A record lookup for {}", hostname);
+        trace!("Performing A record lookup for {}", hostname);
 
         match self.resolver.ipv4_lookup(hostname).await {
             Ok(lookup) => {
                 let addrs: Vec<Ipv4Addr> = lookup.iter().map(|record| record.0).collect();
-                debug!(
+                trace!(
                     "A record lookup for {} returned {} addresses",
                     hostname,
                     addrs.len()
@@ -214,12 +214,12 @@ impl DnsDiscovery {
 
     /// Resolve IPv6 addresses (AAAA records) for a hostname
     pub async fn resolve_ipv6(&self, hostname: &str) -> Result<Vec<Ipv6Addr>, DnsDiscoveryError> {
-        debug!("Performing AAAA record lookup for {}", hostname);
+        trace!("Performing AAAA record lookup for {}", hostname);
 
         match self.resolver.ipv6_lookup(hostname).await {
             Ok(lookup) => {
                 let addrs: Vec<Ipv6Addr> = lookup.iter().map(|record| record.0).collect();
-                debug!(
+                trace!(
                     "AAAA record lookup for {} returned {} addresses",
                     hostname,
                     addrs.len()

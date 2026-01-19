@@ -6,16 +6,16 @@ async fn main() -> Result<(), DnsDiscoveryError> {
     // Initialize logging
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    info!("🔍 Starting DNS Discovery Example");
+    info!("Starting DNS Discovery Example");
 
     // Create the DNS discovery instance
     let discovery = DnsDiscovery::new().await?;
 
     // Discover mainnet peers
-    info!("🌐 Discovering Chia mainnet peers...");
+    info!("Discovering Chia mainnet peers...");
     match discovery.discover_mainnet_peers().await {
         Ok(result) => {
-            info!("✅ Mainnet discovery successful!");
+            info!("Mainnet discovery successful!");
             print_discovery_result("Mainnet", &result);
         }
         Err(e) => {
@@ -26,10 +26,10 @@ async fn main() -> Result<(), DnsDiscoveryError> {
     println!("\n{}", "=".repeat(80));
 
     // Discover testnet11 peers
-    info!("🧪 Discovering Chia testnet11 peers...");
+    info!("Discovering Chia testnet11 peers...");
     match discovery.discover_testnet11_peers().await {
         Ok(result) => {
-            info!("✅ Testnet11 discovery successful!");
+            info!("Testnet11 discovery successful!");
             print_discovery_result("Testnet11", &result);
         }
         Err(e) => {
@@ -40,7 +40,7 @@ async fn main() -> Result<(), DnsDiscoveryError> {
     println!("\n{}", "=".repeat(80));
 
     // Test individual hostname resolution
-    info!("🔬 Testing individual hostname resolution...");
+    info!("Testing individual hostname resolution...");
 
     let test_hostname = "dns-introducer.chia.net";
     info!("Testing resolution for: {}", test_hostname);
