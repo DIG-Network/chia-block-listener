@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
 

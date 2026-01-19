@@ -25,7 +25,7 @@ use clvmr::{
     Allocator, NodePtr,
 };
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, trace};
+use tracing::{debug, info};
 
 /// Block parser that extracts generator information from FullBlock structures
 pub struct BlockParser {
