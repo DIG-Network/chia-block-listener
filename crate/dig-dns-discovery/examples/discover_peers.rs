@@ -1,4 +1,4 @@
-use dns_discovery::{DnsDiscovery, DnsDiscoveryError};
+use dig_dns_discovery::{DnsDiscovery, DnsDiscoveryError};
 use tracing::{info, Level};
 
 #[tokio::main]

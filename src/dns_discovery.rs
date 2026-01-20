@@ -1,5 +1,5 @@
-use dns_discovery::DnsDiscovery;
-pub use dns_discovery::{DiscoveryResult, DnsDiscoveryError, PeerAddress};
+use dig_dns_discovery::DnsDiscovery;
+pub use dig_dns_discovery::{DiscoveryResult, DnsDiscoveryError, PeerAddress};
 
 /// Canonical Rust DNS discovery client (core, N-API free).
 pub struct DnsDiscoveryClient {

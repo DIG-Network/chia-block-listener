@@ -1,9 +1,10 @@
+
 name: Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   build:
@@ -54,9 +55,112 @@ jobs:
             npm/**/package.json
             npm/**/*.node
 
+  publish-crates:
+    name: Publish crates to crates.io
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure curl + python3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl python3
+
+      - name: Cargo login
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo login "$CARGO_REGISTRY_TOKEN"
+
+      - name: Publish dig-dns-discovery (if needed)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: ./crate/dig-dns-discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          CRATE_NAME="dig-dns-discovery"
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          echo "Crate: ${CRATE_NAME}  Version: ${VERSION}"
+          
+          CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE_NAME}/${VERSION}" || true)"
+          if [ "${CODE}" = "200" ]; then
+            echo "${CRATE_NAME} ${VERSION} already exists; skipping."
+            exit 0
+          fi
+          
+          cargo publish --no-verify
+          
+          # Wait for indexing/visibility to reduce flakiness for dependents
+          for i in {1..24}; do
+            CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE_NAME}/${VERSION}" || true)"
+            if [ "${CODE}" = "200" ]; then
+              echo "Confirmed ${CRATE_NAME} ${VERSION} is visible."
+              exit 0
+            fi
+            echo "Waiting for crates.io to index ${CRATE_NAME} ${VERSION}... (${i}/24)"
+            sleep 5
+          done
+          echo "Timed out waiting for crates.io to index ${CRATE_NAME} ${VERSION}."
+          exit 1
+
+      - name: Publish chia-generator-parser (if needed)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: ./crate/chia-generator-parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          CRATE_NAME="chia-generator-parser"
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          echo "Crate: ${CRATE_NAME}  Version: ${VERSION}"
+          
+          CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE_NAME}/${VERSION}" || true)"
+          if [ "${CODE}" = "200" ]; then
+            echo "${CRATE_NAME} ${VERSION} already exists; skipping."
+            exit 0
+          fi
+          
+          cargo publish --no-verify
+          
+          for i in {1..24}; do
+            CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE_NAME}/${VERSION}" || true)"
+            if [ "${CODE}" = "200" ]; then
+              echo "Confirmed ${CRATE_NAME} ${VERSION} is visible."
+              exit 0
+            fi
+            echo "Waiting for crates.io to index ${CRATE_NAME} ${VERSION}... (${i}/24)"
+            sleep 5
+          done
+          echo "Timed out waiting for crates.io to index ${CRATE_NAME} ${VERSION}."
+          exit 1
+
+      - name: Publish chia-block-listener (if needed)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          CRATE_NAME="chia-block-listener"
+          VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          echo "Crate: ${CRATE_NAME}  Version: ${VERSION}"
+          
+          CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE_NAME}/${VERSION}" || true)"
+          if [ "${CODE}" = "200" ]; then
+            echo "${CRATE_NAME} ${VERSION} already exists; skipping."
+            exit 0
+          fi
+          
+          cargo publish --no-verify
+
   publish:
     name: Publish to npm
-    needs: build
+    needs: [build, publish-crates]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -65,7 +169,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
 
       - name: Install @napi-rs/cli
         run: npm i -g @napi-rs/cli@^2.18.4
@@ -83,40 +187,3 @@ jobs:
           napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi
           # publish main package (will reference platform-specific packages)
           npm publish --access public
-
-  publish-crates:
-    name: Publish crates to crates.io
-    needs: build
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cargo login
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          cargo login "$CARGO_REGISTRY_TOKEN"
-
-      - name: Publish dns-discovery
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        working-directory: ./crate/dns-discovery
-        run: |
-          cargo publish --no-verify
-
-      - name: Publish chia-generator-parser
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        working-directory: ./crate/chia-generator-parser
-        run: |
-          cargo publish --no-verify
-
-      - name: Publish chia-block-listener
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          cargo publish --no-verify
