@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="dig-dns-discovery"
-          VER="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
           echo "Crate: ${CRATE}  Version: ${VER}"
 
           # Validate publish packaging/build without uploading
@@ -80,7 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="chia-generator-parser"
-          VER="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
           echo "Crate: ${CRATE}  Version: ${VER}"
 
           cargo publish --dry-run
@@ -98,8 +98,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          DIG_VER="$(python3 -c 'import tomllib; print(tomllib.load(open("crate/dig-dns-discovery/Cargo.toml","rb"))["package"]["version"])')"
-          PAR_VER="$(python3 -c 'import tomllib; print(tomllib.load(open("crate/chia-generator-parser/Cargo.toml","rb"))["package"]["version"])')"
+          DIG_VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          PAR_VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
 
           check() {
             local crate="$1" ver="$2"
@@ -128,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           CRATE="chia-block-listener"
-          VER="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
           echo "Crate: ${CRATE}  Version: ${VER}"
 
           cargo publish --dry-run
