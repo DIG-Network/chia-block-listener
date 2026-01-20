@@ -79,7 +79,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm whoami
           # build tarballs and publish via napi-rs CLI from sub-crate
           napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi
           # publish main package (will reference platform-specific packages)
