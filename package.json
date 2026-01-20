@@ -5,7 +5,7 @@
   "types": "index.d.ts",
   "repository": {
     "type": "git",
-    "url": "https://github.com/DIG-Network/chia-block-listener"
+    "url": "git+https://github.com/DIG-Network/chia-block-listener.git"
   },
   "napi": {
     "name": "chia-block-listener",
@@ -36,10 +36,10 @@
     "artifacts": "napi artifacts",
     "build": "napi build --platform --release --cargo-cwd ./crate/chia-block-listener-napi",
     "build:debug": "napi build --platform --cargo-cwd ./crate/chia-block-listener-napi",
-    "prepublishOnly": "npx napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi",
+    "prepublishOnly": "napi artifacts && napi prepublish -t npm --skip-gh-release",
     "test": "ava",
-    "universal": "napi universal --cargo-cwd ./crate/chia-block-listener-napi",
-    "version": "napi version --cargo-cwd ./crate/chia-block-listener-napi",
+    "universal": "napi universal",
+    "version": "napi version",
     "bump": "node scripts/bump-version.js",
     "bump:dry": "node scripts/bump-version.js --dry-run",
     "deps:check": "cargo machete",
