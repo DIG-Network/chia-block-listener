@@ -36,7 +36,7 @@
     "artifacts": "napi artifacts",
     "build": "napi build --platform --release --cargo-cwd ./crate/chia-block-listener-napi",
     "build:debug": "napi build --platform --cargo-cwd ./crate/chia-block-listener-napi",
-    "prepublishOnly": "napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi",
+    "prepublishOnly": "npx napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi",
     "test": "ava",
     "universal": "napi universal --cargo-cwd ./crate/chia-block-listener-napi",
     "version": "napi version --cargo-cwd ./crate/chia-block-listener-napi",

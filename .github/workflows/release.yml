@@ -203,18 +203,22 @@ jobs:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install @napi-rs/cli
-        run: npm i -g @napi-rs/cli@^2.18.4
+      - name: Install yarn
+        run: corepack enable && corepack prepare yarn@1.22.22 --activate
+
+      - name: Install deps
+        run: yarn install --frozen-lockfile
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
 
-      - name: NAPI prepublish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: napi prepublish -t npm
+      - name: Verify napi supports --cargo-cwd
+        run: |
+          npx napi -V
+          npx napi prepublish --help | sed -n '1,120p'
+          npx napi prepublish --help | grep -q -- '--cargo-cwd'
 
       - name: Publish main npm package
         env:
