@@ -212,13 +212,14 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: artifacts
+          merge-multiple: true
 
-      - name: Verify napi supports --cargo-cwd
-        run: |
-          npx napi -V
-          npx napi prepublish --help | sed -n '1,120p'
-          npx napi prepublish --help | grep -q -- '--cargo-cwd'
+      - name: Install yarn
+        run: corepack enable && corepack prepare yarn@1.22.22 --activate
+
+      - name: Install deps
+        run: yarn install --frozen-lockfile
 
       - name: Publish main npm package
         env:
