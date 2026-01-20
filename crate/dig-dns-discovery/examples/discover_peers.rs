@@ -57,7 +57,7 @@ async fn main() -> Result<(), DnsDiscoveryError> {
     Ok(())
 }
 
-fn print_discovery_result(network: &str, result: &dns_discovery::DiscoveryResult) {
+fn print_discovery_result(network: &str, result: &dig_dns_discovery::DiscoveryResult) {
     println!("\n📋 {} Discovery Results:", network);
     println!("   Total peers found: {}", result.total_count);
     println!("   IPv4 peers: {}", result.ipv4_peers.len());

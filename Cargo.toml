@@ -31,8 +31,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 dirs = "5"
-dig-dns-discovery = "0.2.0"
-chia-generator-parser = "0.2.0"
+dig-dns-discovery = { workspace = true }
+chia-generator-parser = { workspace = true}
 
 [profile.release]
 lto = true
@@ -44,3 +44,7 @@ members = [
     "crate/dig-dns-discovery",
     "crate/chia-block-listener-napi",
 ]
+
+[workspace.dependencies]
+dig-dns-discovery = { path = "crate/dig-dns-discovery", version = "0.2.0" }
+chia-generator-parser = { path = "crate/chia-generator-parser", version = "0.2.0" }
