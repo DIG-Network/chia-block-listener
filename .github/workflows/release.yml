@@ -192,7 +192,7 @@ jobs:
 
   publish:
     name: Publish to npm
-    needs: [publish-crates, build]
+    needs: [ publish-crates, build ]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -211,11 +211,12 @@ jobs:
         with:
           path: dist
 
-      - name: Publish packages
+      - name: NAPI prepublish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          # build tarballs and publish via napi-rs CLI from sub-crate
-          napi prepublish -t npm --cargo-cwd ./crate/chia-block-listener-napi
-          # publish main package (will reference platform-specific packages)
-          npm publish --access public
+        run: napi prepublish -t npm
+
+      - name: Publish main npm package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
