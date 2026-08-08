@@ -13,9 +13,9 @@ futures-util = "0.3"
 tokio-util = "0.7"
 
 # Chia-related dependencies
-chia-protocol = "0.26"
-chia-traits = "0.26"
-chia-ssl = "0.26"
+chia-protocol = "0.36.1"
+chia-traits = "0.36.1"
+chia-ssl = "0.36.1"
 
 # Networking
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }

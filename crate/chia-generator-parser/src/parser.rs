@@ -162,7 +162,7 @@ impl BlockParser {
         };
 
         // Setup arguments
-        let args = match setup_generator_args(&mut allocator, &generator_refs) {
+        let args = match setup_generator_args(&mut allocator, &generator_refs, flags) {
             Ok(args) => args,
             Err(e) => {
                 debug!("Failed to setup generator args: {:?}", e);
