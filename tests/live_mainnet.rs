@@ -201,7 +201,10 @@ async fn connect_mainnet_pool(wanted: usize) -> ChiaPeerPool {
 #[ignore = "requires live mainnet peers"]
 async fn handshakes_with_live_mainnet_peers() {
     let pool = connect_mainnet_pool(1).await;
-    let peers = pool.get_connected_peers().await.expect("pool reports peers");
+    let peers = pool
+        .get_connected_peers()
+        .await
+        .expect("pool reports peers");
     assert!(
         !peers.is_empty(),
         "a handshaken peer must appear in the connected set"
@@ -303,7 +306,10 @@ async fn parses_a_real_block_into_the_coins_the_chain_actually_has() {
 async fn recovers_when_a_peer_is_dropped() {
     let pool = connect_mainnet_pool(3).await;
 
-    let peers = pool.get_connected_peers().await.expect("pool reports peers");
+    let peers = pool
+        .get_connected_peers()
+        .await
+        .expect("pool reports peers");
     assert!(peers.len() >= 3, "failover needs a surviving peer to reach");
 
     let removed = pool
@@ -323,4 +329,3 @@ async fn recovers_when_a_peer_is_dropped() {
     assert_eq!(block.height as u64, FIXTURE_HEIGHT);
     pool.shutdown_and_wait().await.expect("pool shuts down");
 }
-
