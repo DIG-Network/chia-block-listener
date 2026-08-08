@@ -432,11 +432,18 @@ impl PeerConnection {
                             }
                         }
                     }
-                    Ok(WsMessage::Close(_)) => {
-                        error!("Peer closed connection during block request");
-                        return Err(ChiaError::Connection(
-                            "Peer closed connection during block request".to_string(),
-                        ));
+                    Ok(WsMessage::Close(frame)) => {
+                        // The close frame carries the peer's reason. Dropping it
+                        // turns every refusal into one indistinguishable string,
+                        // which is what made this failure mode hard to diagnose.
+                        let reason = frame.map_or_else(
+                            || "no close frame".to_string(),
+                            |f| format!("code {} - {}", f.code, f.reason),
+                        );
+                        error!("Peer closed connection during block request: {}", reason);
+                        return Err(ChiaError::Connection(format!(
+                            "Peer closed connection during block request ({reason})"
+                        )));
                     }
                     Ok(WsMessage::Ping(data)) => {
                         // Respond to ping

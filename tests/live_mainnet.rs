@@ -323,3 +323,4 @@ async fn recovers_when_a_peer_is_dropped() {
     assert_eq!(block.height as u64, FIXTURE_HEIGHT);
     pool.shutdown_and_wait().await.expect("pool shuts down");
 }
+
