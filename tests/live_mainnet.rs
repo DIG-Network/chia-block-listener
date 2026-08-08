@@ -9,13 +9,23 @@
 //!
 //! ## A measured limitation of today's mainnet peer population
 //!
-//! Most mainnet full nodes will not answer `request_block` on the connection
-//! this crate opens: measured over twelve freshly discovered peers, one to two
-//! served the request and the rest closed the socket with WebSocket code 1002.
-//! The peers that do serve return correct blocks, so this is peer policy rather
-//! than a parsing or framing fault — but it means any proof that asks a single
-//! peer measures that peer, not this crate. The fetch helper below therefore
-//! walks peers until one is willing.
+//! Mainnet peers frequently close the socket with WebSocket code 1002 instead
+//! of answering `request_block`. The peers that do answer return correct
+//! blocks, so this is a connection-acceptance problem rather than a parsing or
+//! framing fault.
+//!
+//! The pattern in the measurements points at this crate's TLS identity: a first
+//! request on a freshly connected peer usually succeeds, while requests made
+//! after the same process has already connected to that peer, or while a second
+//! connection to it is open, are refused. `tls::load_or_generate_cert` persists
+//! ONE certificate, so every connection this crate makes presents the same Chia
+//! node id — and a pool built with an event sink opens two simultaneous
+//! connections per peer with it. That is the leading explanation, not a proven
+//! one; it is filed rather than asserted.
+//!
+//! The practical consequence for these tests: run them ONE AT A TIME. Each
+//! passes on its own; run back to back in a single process they exhaust the
+//! peers they have already contacted.
 //!
 //! `recovers_when_a_peer_is_dropped` FAILS against mainnet today for that same
 //! reason compounded by two pool defects: the pool evicts a peer permanently on
@@ -174,7 +184,7 @@ async fn connect_mainnet_pool_skipping(wanted: usize, skip: usize) -> ChiaPeerPo
     // addresses, which reads as "no peers on mainnet" rather than "no IPv6
     // here". Peers are taken in resolver order rather than shuffled so that a
     // failure is reproducible.
-    const PER_FAMILY_ATTEMPTS: usize = 25;
+    const PER_FAMILY_ATTEMPTS: usize = 60;
     let candidates: Vec<_> = discovered
         .ipv6_peers
         .iter()
@@ -284,7 +294,7 @@ async fn tracks_the_true_mainnet_peak() {
 /// most mainnet nodes close the connection rather than answer `request_block`.
 async fn fetch_fixture_block_from_any_willing_peer(
 ) -> chia_block_listener::types::BlockReceivedEvent {
-    const MAX_PEERS_TO_ASK: usize = 12;
+    const MAX_PEERS_TO_ASK: usize = 30;
     let mut refusals = Vec::new();
 
     for skip in 0..MAX_PEERS_TO_ASK {
