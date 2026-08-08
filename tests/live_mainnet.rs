@@ -7,6 +7,22 @@
 //! against this crate's own output could not tell a working listener from a
 //! broken one.
 //!
+//! ## A measured limitation of today's mainnet peer population
+//!
+//! Most mainnet full nodes will not answer `request_block` on the connection
+//! this crate opens: measured over twelve freshly discovered peers, one to two
+//! served the request and the rest closed the socket with WebSocket code 1002.
+//! The peers that do serve return correct blocks, so this is peer policy rather
+//! than a parsing or framing fault — but it means any proof that asks a single
+//! peer measures that peer, not this crate. The fetch helper below therefore
+//! walks peers until one is willing.
+//!
+//! `recovers_when_a_peer_is_dropped` FAILS against mainnet today for that same
+//! reason compounded by two pool defects: the pool evicts a peer permanently on
+//! a single refusal, and its retry loop selects a peer that the request
+//! processor then ignores in favour of its own round-robin choice. The test is
+//! kept, unweakened, as the regression test for that fix.
+//!
 //! They are `#[ignore]`d because they require network access and real peers.
 //! Run them with:
 //!
@@ -134,6 +150,16 @@ fn coin_keys(records: &serde_json::Value) -> BTreeSet<CoinKey> {
 /// sends the handshake and validates the response before it returns — so a
 /// non-empty pool *is* the handshake proof.
 async fn connect_mainnet_pool(wanted: usize) -> ChiaPeerPool {
+    connect_mainnet_pool_skipping(wanted, 0).await
+}
+
+/// As [`connect_mainnet_pool`], but ignoring the first `skip` reachable peers.
+///
+/// Callers that must retry against a *different* peer use this. Around nine in
+/// ten mainnet nodes today refuse `request_block` outright (see the module docs
+/// on that limitation), so a block-fetch proof that binds itself to one peer
+/// measures that peer's policy rather than this crate's correctness.
+async fn connect_mainnet_pool_skipping(wanted: usize, skip: usize) -> ChiaPeerPool {
     let discovery = DnsDiscoveryClient::new()
         .await
         .expect("DNS resolver initialises");
@@ -170,6 +196,7 @@ async fn connect_mainnet_pool(wanted: usize) -> ChiaPeerPool {
     let pool = ChiaPeerPool::new_with_event_sink(event_tx, CancellationToken::new());
 
     let mut connected = 0;
+    let mut skipped = 0;
     let mut failures = Vec::new();
 
     for peer in candidates {
@@ -179,7 +206,12 @@ async fn connect_mainnet_pool(wanted: usize) -> ChiaPeerPool {
         )
         .await
         {
-            Ok(Ok(_)) => {
+            Ok(Ok(peer_id)) => {
+                if skipped < skip {
+                    skipped += 1;
+                    let _ = pool.remove_peer(peer_id).await;
+                    continue;
+                }
                 connected += 1;
                 if connected >= wanted {
                     return pool;
@@ -246,6 +278,41 @@ async fn tracks_the_true_mainnet_peak() {
     pool.shutdown_and_wait().await.expect("pool shuts down");
 }
 
+/// Fetches the fixture block, trying successive peers until one serves it.
+///
+/// The retry is about peer policy, not about flakiness in the code under test:
+/// most mainnet nodes close the connection rather than answer `request_block`.
+async fn fetch_fixture_block_from_any_willing_peer(
+) -> chia_block_listener::types::BlockReceivedEvent {
+    const MAX_PEERS_TO_ASK: usize = 12;
+    let mut refusals = Vec::new();
+
+    for skip in 0..MAX_PEERS_TO_ASK {
+        let pool = connect_mainnet_pool_skipping(1, skip).await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(60),
+            pool.get_block_by_height(FIXTURE_HEIGHT),
+        )
+        .await
+        .expect("block request completes");
+        pool.shutdown_and_wait().await.expect("pool shuts down");
+
+        match outcome {
+            Ok(block) => return block,
+            Err(e) => refusals.push(e.to_string()),
+        }
+    }
+
+    panic!(
+        "no peer out of {MAX_PEERS_TO_ASK} served block {FIXTURE_HEIGHT}; refusals:
+{}",
+        refusals.join(
+            "
+"
+        )
+    );
+}
+
 /// Proof 3: a real mainnet block parses to the coin set an outside source
 /// reports for that same block.
 ///
@@ -256,17 +323,7 @@ async fn tracks_the_true_mainnet_peak() {
 #[tokio::test]
 #[ignore = "requires live mainnet peers"]
 async fn parses_a_real_block_into_the_coins_the_chain_actually_has() {
-    let pool = connect_mainnet_pool(1).await;
-
-    let block = tokio::time::timeout(
-        Duration::from_secs(60),
-        pool.get_block_by_height(FIXTURE_HEIGHT),
-    )
-    .await
-    .expect("block request completes")
-    .expect("a peer serves the fixture block");
-
-    pool.shutdown_and_wait().await.expect("pool shuts down");
+    let block = fetch_fixture_block_from_any_willing_peer().await;
 
     assert_eq!(block.height as u64, FIXTURE_HEIGHT);
     assert!(
