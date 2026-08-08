@@ -17,7 +17,12 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use chia_block_listener::{peer_pool::ChiaPeerPool, types::CoinRecord, DnsDiscoveryClient};
+use chia_block_listener::{
+    peer_pool::ChiaPeerPool,
+    types::{CoinRecord, Event},
+    DnsDiscoveryClient,
+};
+use tokio_util::sync::CancellationToken;
 
 const MAINNET: &str = "mainnet";
 const COINSET: &str = "https://api.coinset.org";
@@ -156,7 +161,14 @@ async fn connect_mainnet_pool(wanted: usize) -> ChiaPeerPool {
         "DNS discovery returned no mainnet peers"
     );
 
-    let pool = ChiaPeerPool::new();
+    // The pool is built with an event sink because that is what starts the
+    // streaming listener; without it the pool is a request/response client and
+    // never observes a peer's peak announcements at all. Events are drained and
+    // discarded — these tests read pool state, not the stream.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<Event>(256);
+    tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
+    let pool = ChiaPeerPool::new_with_event_sink(event_tx, CancellationToken::new());
+
     let mut connected = 0;
     let mut failures = Vec::new();
 

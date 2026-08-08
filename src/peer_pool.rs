@@ -192,6 +192,7 @@ impl ChiaPeerPool {
             let host_for_stream = host.clone();
             let cancel_for_stream = self.cancel_token.clone();
             let tx_stream_clone = tx_stream.clone();
+            let inner_for_stream = self.inner.clone();
 
             let stream_handle = tokio::spawn(async move {
                 // Establish streaming connection
@@ -253,12 +254,13 @@ impl ChiaPeerPool {
                                             }
                                         }
                                         Some(StreamEvent::NewPeak(new_peak)) => {
-                                            // Update peak state and emit best-effort
-                                            let _ = tx_stream_clone.try_send(Event::NewPeakHeight(NewPeakHeightEvent {
-                                                old_peak: None,
+                                            Self::record_peak(
+                                                &inner_for_stream,
+                                                &reader_peer_id,
+                                                Some(&tx_stream_clone),
                                                 new_peak,
-                                                peer_id: reader_peer_id.clone(),
-                                            }));
+                                            )
+                                            .await;
                                         }
                                         None => break,
                                     }
@@ -1083,8 +1085,29 @@ impl ChiaPeerPool {
     }
 
     async fn update_peak_height(block_height: u32, params: &PeerWorkerParams) {
-        let mut guard = params.inner.write().await;
-        if let Some(peer_info) = guard.peers.get_mut(&params.peer_id) {
+        Self::record_peak(
+            &params.inner,
+            &params.peer_id,
+            params.event_tx.as_ref(),
+            block_height,
+        )
+        .await;
+    }
+
+    /// Records a peak height observed for one peer and, if it is the highest the
+    /// pool has seen, promotes it to the pool-wide peak and announces it.
+    ///
+    /// Both a fetched block and a peer's unsolicited `NewPeakWallet` land here.
+    /// Keeping one writer means `get_highest_peak` cannot report the height of
+    /// the last block someone happened to fetch while the chain has moved on.
+    async fn record_peak(
+        inner: &Arc<RwLock<ChiaPeerPoolInner>>,
+        peer_id: &str,
+        event_tx: Option<&mpsc::Sender<Event>>,
+        block_height: u32,
+    ) {
+        let mut guard = inner.write().await;
+        if let Some(peer_info) = guard.peers.get_mut(peer_id) {
             match peer_info.peak_height {
                 Some(current_peak) => {
                     if block_height > current_peak {
@@ -1097,39 +1120,22 @@ impl ChiaPeerPool {
             }
         }
 
-        // Update global highest peak
         let old_peak = guard.highest_peak;
-        match guard.highest_peak {
-            Some(current_highest) => {
-                if block_height > current_highest {
-                    guard.highest_peak = Some(block_height);
-                    info!("New highest peak from block fetch: {}", block_height);
-                    drop(guard);
+        let is_new_peak = old_peak.is_none_or(|current| block_height > current);
+        if !is_new_peak {
+            return;
+        }
 
-                    // Emit new peak event via event sink
-                    if let Some(tx) = &params.event_tx {
-                        let _ = tx.try_send(Event::NewPeakHeight(NewPeakHeightEvent {
-                            old_peak,
-                            new_peak: block_height,
-                            peer_id: params.peer_id.clone(),
-                        }));
-                    }
-                }
-            }
-            None => {
-                guard.highest_peak = Some(block_height);
-                info!("First peak height set: {}", block_height);
-                drop(guard);
+        guard.highest_peak = Some(block_height);
+        info!("Pool peak height is now {}", block_height);
+        drop(guard);
 
-                // Emit new peak event via event sink
-                if let Some(tx) = &params.event_tx {
-                    let _ = tx.try_send(Event::NewPeakHeight(NewPeakHeightEvent {
-                        old_peak,
-                        new_peak: block_height,
-                        peer_id: params.peer_id.clone(),
-                    }));
-                }
-            }
+        if let Some(tx) = event_tx {
+            let _ = tx.try_send(Event::NewPeakHeight(NewPeakHeightEvent {
+                old_peak,
+                new_peak: block_height,
+                peer_id: peer_id.to_string(),
+            }));
         }
     }
 
