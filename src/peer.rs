@@ -915,7 +915,7 @@ mod tests {
         assert!(!message.contains('\n'), "{message}");
         assert!(!message.contains('\r'), "{message}");
         assert!(
-            message.len() < 256,
+            message.len() < MAX_PEER_STRING_RENDERED_BYTES,
             "a peer chose {} bytes of error message",
             message.len()
         );

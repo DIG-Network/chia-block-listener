@@ -24,7 +24,8 @@ pub struct PeerDisconnectedEvent {
 ///
 /// A falling peak — a peer evicted, a streaming connection closed — is not
 /// emitted; it is visible only by polling `get_highest_peak`. Emission is
-/// on-rise-only so that a peer cannot drive the event channel.
+/// on-rise-only to halve the traffic; the actual bound is the event channel,
+/// which drops events when full.
 #[derive(Clone, Debug)]
 pub struct NewPeakHeightEvent {
     /// The pool peak this event stream last *cached*, or `None` if this is the

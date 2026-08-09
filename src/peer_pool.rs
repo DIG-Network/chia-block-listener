@@ -1263,7 +1263,8 @@ impl ChiaPeerPool {
         // The cache tracks the derived peak in both directions but only ever
         // emits on a rise. Latching it at a high-water mark would let a lie
         // that has since been evicted silence `NewPeakHeight` permanently;
-        // emitting on every change would let a peer drive a 32-slot channel.
+        // on-rise-only halves the traffic compared to emitting every change. The
+        // actual bound is the 32-slot event channel, which drops events when full.
         let old_peak = guard.last_announced_peak;
         let Some(new_peak) = Self::pool_peak(&guard) else {
             guard.last_announced_peak = None;
