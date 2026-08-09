@@ -142,11 +142,19 @@ impl BlockParser {
         // Create allocator for CLVM execution
         let mut allocator = make_allocator(clvmr::LIMIT_HEAP);
 
-        // TODO: Fetch actual block references for compressed blocks
-        // For now, use empty references
+        // BLOCKER: DIG-Network/dig_ecosystem#2388 — block references are not
+        // fetched yet, so a block whose generator uses `transactions_generator_
+        // ref_list` fails CLVM execution and silently yields empty coin vectors.
+        // Closing it needs a peer round-trip to fetch the referenced generators.
         let generator_refs: Vec<&[u8]> = Vec::new();
 
-        // Use test constants (similar to mainnet)
+        // Despite its name, upstream's `TEST_CONSTANTS` carries the real Chia
+        // MAINNET genesis (as AGG_SIG_ME additional data) and the mainnet cost
+        // limits — which is the only reason running mainnet generators against
+        // it is correct. It is an upstream test fixture with no stability
+        // contract, so `tests/mainnet_constants_pin.rs` pins all nine
+        // load-bearing fields against an independent source; upstream drift
+        // becomes a red build rather than blocks silently parsing to zero coins.
         let constants = TEST_CONSTANTS;
         let max_cost = constants.max_block_cost_clvm;
         let flags = DONT_VALIDATE_SIGNATURE;
@@ -162,7 +170,7 @@ impl BlockParser {
         };
 
         // Setup arguments
-        let args = match setup_generator_args(&mut allocator, &generator_refs) {
+        let args = match setup_generator_args(&mut allocator, &generator_refs, flags) {
             Ok(args) => args,
             Err(e) => {
                 debug!("Failed to setup generator args: {:?}", e);
