@@ -1,6 +1,6 @@
 {
   "name": "@dignetwork/chia-block-listener-win32-x64-msvc",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/DIG-Network/chia-block-listener"
