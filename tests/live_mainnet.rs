@@ -21,7 +21,7 @@
 //! ONE certificate, so every connection this crate makes presents the same Chia
 //! node id — and a pool built with an event sink opens two simultaneous
 //! connections per peer with it. That is the leading explanation, not a proven
-//! one; it is filed rather than asserted.
+//! one; it is filed rather than asserted (DIG-Network/dig_ecosystem#2395).
 //!
 //! The practical consequence for these tests: run them ONE AT A TIME. Each
 //! passes on its own; run back to back in a single process they exhaust the
@@ -30,8 +30,9 @@
 //! `recovers_when_a_peer_is_dropped` FAILS against mainnet today for that same
 //! reason compounded by two pool defects: the pool evicts a peer permanently on
 //! a single refusal, and its retry loop selects a peer that the request
-//! processor then ignores in favour of its own round-robin choice. The test is
-//! kept, unweakened, as the regression test for that fix.
+//! processor then ignores in favour of its own round-robin choice
+//! (DIG-Network/dig_ecosystem#2394). The test is kept, unweakened, as the
+//! regression test for that fix.
 //!
 //! They are `#[ignore]`d because they require network access and real peers.
 //! Run them with:
