@@ -10,13 +10,37 @@ use std::net::IpAddr;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
-    connect_async_tls_with_config, tungstenite::Message as WsMessage, Connector, MaybeTlsStream,
-    WebSocketStream,
+    connect_async_tls_with_config, tungstenite::protocol::CloseFrame,
+    tungstenite::Message as WsMessage, Connector, MaybeTlsStream, WebSocketStream,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 type WebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// Renders a peer's WebSocket close frame for logs and error strings.
+///
+/// The reason text is authored by the remote peer — tungstenite only checks it
+/// is valid UTF-8 — so it is rendered with `{:?}`, which escapes control
+/// characters. Rendered with `{}`, a single `\n` in the reason would let a peer
+/// forge extra lines in our logs and in the JS `Error.message` this string
+/// eventually reaches.
+fn describe_close_reason(frame: Option<&CloseFrame<'_>>) -> String {
+    frame.map_or_else(
+        || "no close frame".to_string(),
+        |f| format!("code {} - {:?}", f.code, f.reason),
+    )
+}
+
+/// Builds the error reported when a peer closes the socket mid-request.
+///
+/// The word "closed" is load-bearing: `peer_pool` substring-matches it on the
+/// `ChiaError::Connection` text to decide whether to evict the peer.
+fn peer_closed_during_request(reason: &str) -> ChiaError {
+    ChiaError::Connection(format!(
+        "Peer closed connection during block request ({reason})"
+    ))
+}
 
 #[derive(Clone)]
 pub struct PeerConnection {
@@ -436,14 +460,9 @@ impl PeerConnection {
                         // The close frame carries the peer's reason. Dropping it
                         // turns every refusal into one indistinguishable string,
                         // which is what made this failure mode hard to diagnose.
-                        let reason = frame.map_or_else(
-                            || "no close frame".to_string(),
-                            |f| format!("code {} - {}", f.code, f.reason),
-                        );
+                        let reason = describe_close_reason(frame.as_ref());
                         error!("Peer closed connection during block request: {}", reason);
-                        return Err(ChiaError::Connection(format!(
-                            "Peer closed connection during block request ({reason})"
-                        )));
+                        return Err(peer_closed_during_request(&reason));
                     }
                     Ok(WsMessage::Ping(data)) => {
                         // Respond to ping
@@ -476,5 +495,54 @@ impl PeerConnection {
         Err(ChiaError::Protocol(
             "Timeout waiting for block response".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    fn close_frame(reason: &str) -> CloseFrame<'_> {
+        CloseFrame {
+            code: CloseCode::Policy,
+            reason: reason.into(),
+        }
+    }
+
+    /// A peer authors the close reason, so control characters in it must never
+    /// reach a log line or an error string verbatim.
+    #[test]
+    fn close_reason_control_characters_are_escaped() {
+        let hostile = "bye\r\nERROR forged log line\u{1b}[31m\u{0}";
+
+        let rendered = describe_close_reason(Some(&close_frame(hostile)));
+
+        for raw in ['\n', '\r', '\u{1b}', '\u{0}'] {
+            assert!(
+                !rendered.contains(raw),
+                "raw {raw:?} survived rendering: {rendered:?}"
+            );
+        }
+        assert!(rendered.contains("forged log line"), "{rendered}");
+    }
+
+    /// `peer_pool` substring-matches "closed" on the resulting error string to
+    /// decide whether to evict a peer; escaping must not disturb that, even when
+    /// the peer deliberately crafts a reason to break the match.
+    #[test]
+    fn peer_closed_error_stays_matchable_and_escaped() {
+        let reason = describe_close_reason(Some(&close_frame("closed\r\nnot really")));
+
+        let message = peer_closed_during_request(&reason).to_string();
+
+        assert!(message.contains("closed"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
+        assert!(!message.contains('\r'), "{message}");
+    }
+
+    #[test]
+    fn missing_close_frame_is_described() {
+        assert_eq!(describe_close_reason(None), "no close frame");
     }
 }

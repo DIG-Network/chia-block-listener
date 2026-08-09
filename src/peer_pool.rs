@@ -53,7 +53,21 @@ struct ChiaPeerPoolInner {
     peers: HashMap<String, PeerInfo>,
     peer_ids: Vec<String>,    // For round-robin
     round_robin_index: usize, // Track current position in round-robin
-    highest_peak: Option<u32>,
+    /// Highest height of a block this process actually fetched and parsed.
+    /// Self-evident, so it is trusted and never lowered.
+    local_peak: Option<u32>,
+    /// The last pool peak published as `Event::NewPeakHeight`. A de-duplication
+    /// cache for the event stream, never the answer to "what is the peak?".
+    last_announced_peak: Option<u32>,
+}
+
+/// Where a height observation came from, which decides how much it is trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeakSource {
+    /// A block this process requested, received and parsed. Self-evident.
+    LocallyFetched,
+    /// A peer's unsolicited `NewPeakWallet`. Unverified and attacker-controlled.
+    PeerAnnounced,
 }
 
 struct PeerInfo {
@@ -97,7 +111,8 @@ impl ChiaPeerPool {
             peers: HashMap::new(),
             peer_ids: Vec::new(),
             round_robin_index: 0,
-            highest_peak: None,
+            local_peak: None,
+            last_announced_peak: None,
         }));
 
         let pool = Self {
@@ -123,7 +138,8 @@ impl ChiaPeerPool {
             peers: HashMap::new(),
             peer_ids: Vec::new(),
             round_robin_index: 0,
-            highest_peak: None,
+            local_peak: None,
+            last_announced_peak: None,
         }));
 
         let pool = Self {
@@ -259,6 +275,7 @@ impl ChiaPeerPool {
                                                 &reader_peer_id,
                                                 Some(&tx_stream_clone),
                                                 new_peak,
+                                                PeakSource::PeerAnnounced,
                                             )
                                             .await;
                                         }
@@ -564,8 +581,50 @@ impl ChiaPeerPool {
         Ok(guard.peer_ids.clone())
     }
 
+    /// The pool's current peak height.
+    ///
+    /// Derived on read from live peers, so a peer that lied about its peak stops
+    /// counting the moment it is evicted or disconnects.
     pub async fn get_highest_peak(&self) -> Option<u32> {
-        self.inner.read().await.highest_peak
+        Self::pool_peak(&*self.inner.read().await)
+    }
+
+    /// Computes the pool peak from the evidence currently available.
+    ///
+    /// A peer's `NewPeakWallet` is unsolicited and unverified, so a height is
+    /// only believed once a second entry claims to be at or above it — which is
+    /// exactly the second-highest per-entry claim. One hostile entry therefore
+    /// cannot move this value at all, however large its claim, and its claim
+    /// vanishes with it when it is removed. A locally fetched block needs no
+    /// corroboration: we parsed it ourselves.
+    ///
+    /// **The bound this buys, stated exactly.** A pool entry is keyed by
+    /// `host:port` (see `add_peer`), not by a proven identity — this crate has
+    /// no cryptographic peer identity. So "a second entry" means a second
+    /// *endpoint*, and forging corroboration costs an attacker one more address
+    /// rather than one more independent operator. Two endpoints it controls
+    /// still move this value; `two_colluding_endpoints_still_move_the_pool_peak`
+    /// pins that, so the guarantee cannot be read as stronger than it is. This
+    /// is a real improvement over one endpoint poisoning the peak permanently,
+    /// and it is not a sybil defence. Choosing the right rule is
+    /// `DIG-Network/dig_ecosystem#2458`.
+    ///
+    /// Computed in one pass, holding no allocation: `record_peak` calls this
+    /// under the pool write guard, on the block-delivery path.
+    fn pool_peak(inner: &ChiaPeerPoolInner) -> Option<u32> {
+        // Highest and second-highest claim by value, counting duplicates
+        // separately so that two entries both claiming H do corroborate H.
+        let (mut highest, mut corroborated) = (None, None);
+        for claim in inner.peers.values().filter_map(|p| p.peak_height) {
+            if Some(claim) > highest {
+                corroborated = highest;
+                highest = Some(claim);
+            } else if Some(claim) > corroborated {
+                corroborated = Some(claim);
+            }
+        }
+
+        inner.local_peak.max(corroborated)
     }
 
     fn start_request_processor(&self, mut receiver: mpsc::Receiver<PoolRequest>) {
@@ -1090,21 +1149,24 @@ impl ChiaPeerPool {
             &params.peer_id,
             params.event_tx.as_ref(),
             block_height,
+            PeakSource::LocallyFetched,
         )
         .await;
     }
 
-    /// Records a peak height observed for one peer and, if it is the highest the
-    /// pool has seen, promotes it to the pool-wide peak and announces it.
+    /// Records a height observed for one peer and announces the pool peak if
+    /// that observation raised it.
     ///
-    /// Both a fetched block and a peer's unsolicited `NewPeakWallet` land here.
-    /// Keeping one writer means `get_highest_peak` cannot report the height of
-    /// the last block someone happened to fetch while the chain has moved on.
+    /// Both a fetched block and a peer's unsolicited `NewPeakWallet` land here,
+    /// so `get_highest_peak` cannot report the height of the last block someone
+    /// happened to fetch while the chain has moved on. The two are weighed
+    /// differently — see `pool_peak`.
     async fn record_peak(
         inner: &Arc<RwLock<ChiaPeerPoolInner>>,
         peer_id: &str,
         event_tx: Option<&mpsc::Sender<Event>>,
         block_height: u32,
+        source: PeakSource,
     ) {
         let mut guard = inner.write().await;
         if let Some(peer_info) = guard.peers.get_mut(peer_id) {
@@ -1120,20 +1182,26 @@ impl ChiaPeerPool {
             }
         }
 
-        let old_peak = guard.highest_peak;
-        let is_new_peak = old_peak.is_none_or(|current| block_height > current);
-        if !is_new_peak {
+        if source == PeakSource::LocallyFetched {
+            guard.local_peak = guard.local_peak.max(Some(block_height));
+        }
+
+        let old_peak = guard.last_announced_peak;
+        let Some(new_peak) = Self::pool_peak(&guard) else {
+            return;
+        };
+        if old_peak.is_some_and(|announced| new_peak <= announced) {
             return;
         }
 
-        guard.highest_peak = Some(block_height);
-        info!("Pool peak height is now {}", block_height);
+        guard.last_announced_peak = Some(new_peak);
+        info!("Pool peak height is now {}", new_peak);
         drop(guard);
 
         if let Some(tx) = event_tx {
             let _ = tx.try_send(Event::NewPeakHeight(NewPeakHeightEvent {
                 old_peak,
-                new_peak: block_height,
+                new_peak,
                 peer_id: peer_id.to_string(),
             }));
         }
@@ -1213,5 +1281,162 @@ impl ChiaPeerPool {
         }
 
         // Emit disconnected event via core event sink
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HONEST: u32 = 1_000_000;
+
+    fn pool_with_events() -> (ChiaPeerPool, mpsc::Receiver<Event>) {
+        let (tx, rx) = mpsc::channel(32);
+        (
+            ChiaPeerPool::new_with_event_sink(tx, CancellationToken::new()),
+            rx,
+        )
+    }
+
+    /// Registers a peer without any network I/O, as `add_peer` would.
+    async fn register_peer(pool: &ChiaPeerPool, peer_id: &str) {
+        let mut guard = pool.inner.write().await;
+        guard.peers.insert(
+            peer_id.to_string(),
+            PeerInfo {
+                last_used: Instant::now(),
+                is_connected: true,
+                worker_tx: None,
+                peak_height: None,
+            },
+        );
+        guard.peer_ids.push(peer_id.to_string());
+    }
+
+    async fn announce(pool: &ChiaPeerPool, peer_id: &str, height: u32) {
+        ChiaPeerPool::record_peak(
+            &pool.inner,
+            peer_id,
+            pool.event_tx.as_ref(),
+            height,
+            PeakSource::PeerAnnounced,
+        )
+        .await;
+    }
+
+    fn announced_peaks(rx: &mut mpsc::Receiver<Event>) -> Vec<u32> {
+        let mut heights = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let Event::NewPeakHeight(peak) = event {
+                heights.push(peak.new_peak);
+            }
+        }
+        heights
+    }
+
+    /// One hostile `NewPeakWallet` must not become the pool-wide high-water
+    /// mark, or every later honest peak compares below it and is swallowed.
+    #[tokio::test]
+    async fn a_lying_peer_cannot_suppress_later_honest_peaks() {
+        let (pool, mut events) = pool_with_events();
+        register_peer(&pool, "liar").await;
+        register_peer(&pool, "honest-a").await;
+        register_peer(&pool, "honest-b").await;
+
+        announce(&pool, "liar", u32::MAX).await;
+        announce(&pool, "honest-a", HONEST).await;
+        announce(&pool, "honest-b", HONEST).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+        assert!(
+            announced_peaks(&mut events).contains(&HONEST),
+            "the honest peak was never announced"
+        );
+    }
+
+    /// The liar's height must not outlive the liar.
+    #[tokio::test]
+    async fn the_pool_peak_recovers_once_the_liar_is_gone() {
+        let (pool, _events) = pool_with_events();
+        register_peer(&pool, "liar").await;
+        register_peer(&pool, "honest-a").await;
+        register_peer(&pool, "honest-b").await;
+        announce(&pool, "honest-a", HONEST).await;
+        announce(&pool, "honest-b", HONEST).await;
+        announce(&pool, "liar", u32::MAX).await;
+
+        pool.remove_peer("liar".to_string()).await.unwrap();
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+    }
+
+    /// A height we fetched and parsed ourselves is self-evident: it counts even
+    /// though no second peer corroborates it.
+    #[tokio::test]
+    async fn a_locally_fetched_height_counts_without_corroboration() {
+        let (pool, mut events) = pool_with_events();
+        register_peer(&pool, "only-peer").await;
+
+        ChiaPeerPool::record_peak(
+            &pool.inner,
+            "only-peer",
+            pool.event_tx.as_ref(),
+            HONEST,
+            PeakSource::LocallyFetched,
+        )
+        .await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+        assert_eq!(announced_peaks(&mut events), vec![HONEST]);
+    }
+
+    /// A single peer's announcement is not evidence on its own.
+    #[tokio::test]
+    async fn an_uncorroborated_announcement_does_not_move_the_pool_peak() {
+        let (pool, _events) = pool_with_events();
+        register_peer(&pool, "lonely").await;
+
+        announce(&pool, "lonely", HONEST).await;
+
+        assert_eq!(pool.get_highest_peak().await, None);
+    }
+
+    /// The limitation, made checkable rather than only described.
+    ///
+    /// Corroboration counts pool entries, and an entry is a `host:port`
+    /// endpoint rather than a proven identity, so one attacker holding two
+    /// addresses satisfies the threshold. Asserting it keeps `pool_peak`'s
+    /// documented bound honest: raising the threshold must fail this test and
+    /// force the doc to be rewritten with it.
+    #[tokio::test]
+    async fn two_colluding_endpoints_still_move_the_pool_peak() {
+        let (pool, _events) = pool_with_events();
+        register_peer(&pool, "10.0.0.1:8444").await;
+        register_peer(&pool, "10.0.0.1:8445").await;
+        register_peer(&pool, "honest").await;
+
+        announce(&pool, "10.0.0.1:8444", u32::MAX).await;
+        announce(&pool, "10.0.0.1:8445", u32::MAX).await;
+        announce(&pool, "honest", HONEST).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(u32::MAX));
+    }
+
+    /// Duplicate claims must corroborate each other, which is what makes the
+    /// rule "a second entry agrees" rather than "a second, strictly lower
+    /// entry exists". A single-pass top-two that mishandles ties would report
+    /// the honest height here and look correct on every other test.
+    #[tokio::test]
+    async fn two_peers_claiming_the_same_height_corroborate_it() {
+        let (pool, _events) = pool_with_events();
+        register_peer(&pool, "a").await;
+        register_peer(&pool, "b").await;
+        register_peer(&pool, "c").await;
+
+        announce(&pool, "a", HONEST).await;
+        announce(&pool, "b", HONEST).await;
+        announce(&pool, "c", HONEST - 1).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
     }
 }
