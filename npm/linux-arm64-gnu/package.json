@@ -1,6 +1,6 @@
 {
   "name": "@dignetwork/chia-block-listener-linux-arm64-gnu",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/DIG-Network/chia-block-listener"

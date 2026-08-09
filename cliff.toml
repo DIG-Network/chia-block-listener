@@ -45,7 +45,10 @@ commit_parsers = [
   { message = "^build", group = "<!-- 6 -->Build" },
   { message = "^ci", group = "<!-- 7 -->CI" },
   { message = "^style", group = "<!-- 8 -->Styling" },
-  { message = "^chore\(release\)", skip = true },
+  # Literal string (single quotes): the regex needs a real backslash before each
+  # paren, and a TOML *basic* string rejects `\(` as an unknown escape — which is
+  # what silently blocked every release tag before v0.3.0.
+  { message = '^chore\(release\)', skip = true },
   { message = "^chore", group = "<!-- 9 -->Chores" },
   { body = ".*security", group = "<!-- 10 -->Security" },
   { message = "^revert", group = "<!-- 11 -->Reverts" },

@@ -1,6 +1,6 @@
 [package]
 name = "chia-block-listener"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Event driven listener and messaging interface for Chia blockchain peers"
 license = "Apache-2.0" # or "MIT" / "MIT OR Apache-2.0" etc.
@@ -52,5 +52,5 @@ members = [
 ]
 
 [workspace.dependencies]
-dig-dns-discovery = { path = "crate/dig-dns-discovery", version = "0.3.0" }
-chia-generator-parser = { path = "crate/chia-generator-parser", version = "0.3.0" }
+dig-dns-discovery = { path = "crate/dig-dns-discovery", version = "0.3.1" }
+chia-generator-parser = { path = "crate/chia-generator-parser", version = "0.3.1" }
