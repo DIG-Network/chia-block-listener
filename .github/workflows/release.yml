@@ -53,96 +53,26 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo login "$CARGO_REGISTRY_TOKEN"
 
-      - name: Publish dig-dns-discovery (dry-run + if needed)
+      # Publish bottom-up: each crate depends only on the ones published before it.
+      # publish-crate.sh does not return until crates.io actually serves the version it
+      # uploaded, so the next crate's `cargo publish` can always resolve it from the
+      # index. That replaces the separate visibility-wait step this job used to have,
+      # which polled crates.io without a User-Agent, could therefore only ever see a
+      # 403, and so timed out on every release — leaving the last crate unpublished.
+      - name: Publish dig-dns-discovery
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        working-directory: ./crate/dig-dns-discovery
-        shell: bash
-        run: |
-          set -euo pipefail
-          CRATE="dig-dns-discovery"
-          VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          echo "Crate: ${CRATE}  Version: ${VER}"
+        run: ./scripts/publish-crate.sh dig-dns-discovery
 
-          # Validate publish packaging/build without uploading
-          cargo publish --dry-run
-
-          CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}" || true)"
-          if [ "$CODE" = "200" ]; then
-            echo "Already published: ${CRATE} ${VER} (skipping upload)."
-            exit 0
-          fi
-
-          cargo publish --no-verify
-
-      - name: Publish chia-generator-parser (dry-run + if needed)
+      - name: Publish chia-generator-parser
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        working-directory: ./crate/chia-generator-parser
-        shell: bash
-        run: |
-          set -euo pipefail
-          CRATE="chia-generator-parser"
-          VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          echo "Crate: ${CRATE}  Version: ${VER}"
+        run: ./scripts/publish-crate.sh chia-generator-parser
 
-          cargo publish --dry-run
-
-          CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}" || true)"
-          if [ "$CODE" = "200" ]; then
-            echo "Already published: ${CRATE} ${VER} (skipping upload)."
-            exit 0
-          fi
-
-          cargo publish --no-verify
-
-      # Reduce flakiness: ensure the dependency versions are visible before publishing chia-block-listener.
-      - name: Wait for crates.io visibility (dig-dns-discovery + chia-generator-parser)
-        shell: bash
-        run: |
-          set -euo pipefail
-          DIG_VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          PAR_VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
-
-          check() {
-            local crate="$1" ver="$2"
-            curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${crate}/${ver}" || true
-          }
-
-          for i in {1..24}; do
-            A="$(check dig-dns-discovery "$DIG_VER")"
-            B="$(check chia-generator-parser "$PAR_VER")"
-            if [ "$A" = "200" ] && [ "$B" = "200" ]; then
-              echo "Deps visible on crates.io."
-              exit 0
-            fi
-            echo "Waiting for crates.io visibility... (${i}/24)"
-            sleep 5
-          done
-
-          echo "Timed out waiting for dependency crates to be visible on crates.io."
-          exit 1
-
-      - name: Publish chia-block-listener (dry-run + if needed)
+      - name: Publish chia-block-listener
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        working-directory: .
-        shell: bash
-        run: |
-          set -euo pipefail
-          CRATE="chia-block-listener"
-          VER="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import sys, json; print(json.load(sys.stdin)["packages"][0]["version"])')"
-          echo "Crate: ${CRATE}  Version: ${VER}"
-
-          cargo publish --dry-run
-
-          CODE="$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/${CRATE}/${VER}" || true)"
-          if [ "$CODE" = "200" ]; then
-            echo "Already published: ${CRATE} ${VER} (skipping upload)."
-            exit 0
-          fi
-
-          cargo publish --no-verify
+        run: ./scripts/publish-crate.sh chia-block-listener
 
   build:
     name: Build binaries (${{ matrix.os }})
