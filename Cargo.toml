@@ -1,6 +1,6 @@
 [package]
 name = "chia-block-listener"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Event driven listener and messaging interface for Chia blockchain peers"
 license = "Apache-2.0" # or "MIT" / "MIT OR Apache-2.0" etc.

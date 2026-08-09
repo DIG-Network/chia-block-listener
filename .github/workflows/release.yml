@@ -127,14 +127,23 @@ jobs:
     name: Publish to npm
     needs: [ publish-crates, build ]
     runs-on: ubuntu-22.04
+    # A job-level `permissions` block REPLACES the workflow-level one, so `contents: read`
+    # is restated here for the checkout. `id-token: write` mints the OIDC token npm
+    # exchanges for a short-lived publish credential (trusted publishing).
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
+      # `registry-url` is deliberately omitted: it makes setup-node write an .npmrc
+      # containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`. With the token
+      # gone that header expands to empty, and an empty-but-present auth header can take
+      # precedence over OIDC and fail the publish. No .npmrc at all is the safe state.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
 
       - name: Install yarn
         run: corepack enable && corepack prepare yarn@1.22.22 --activate
@@ -154,7 +163,21 @@ jobs:
       - name: Install deps
         run: yarn install --frozen-lockfile
 
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships an older npm. The version is
+      # echoed so a future silent downgrade shows up in the log instead of as a mystery
+      # auth failure. This also covers the per-platform packages: `prepublishOnly` runs
+      # `napi prepublish`, which shells out to `npm publish` in each npm/<triple>/ dir and
+      # therefore uses this same global npm.
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # No NODE_AUTH_TOKEN, and no .npmrc: the credential is the OIDC token minted from
+      # `id-token: write`. The .npmrc is printed to prove no auth header survives — it
+      # holds no secret now that the token is gone.
       - name: Publish main npm package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          echo "--- ~/.npmrc ---"; cat ~/.npmrc 2>/dev/null || echo "(absent)"
+          echo "--- ./.npmrc ---"; cat .npmrc 2>/dev/null || echo "(absent)"
+          npm publish --access public
