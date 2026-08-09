@@ -1,6 +1,7 @@
 use crate::error::ChiaError;
 use crate::peer::PeerConnection;
 use crate::peer::StreamEvent;
+use crate::peer::BLOCK_HEIGHT_MISMATCH;
 use crate::types::{
     BlockReceivedEvent, CoinRecord, CoinSpend, Event, NewPeakHeightEvent, PeerConnectedEvent,
     PeerDisconnectedEvent,
@@ -31,6 +32,24 @@ const WORKER_CHANNEL_CAPACITY: usize = 10; // Capacity for per-worker request ch
 
 // Rust-native events and types are defined in crate::types and used throughout this module.
 
+/// Whether a `ChiaError::Protocol` message describes a peer worth evicting.
+///
+/// Protocol errors span "this peer is broken or hostile" and "this exchange did
+/// not work out", and only the first justifies dropping a peer. Matching on the
+/// message text is fragile, so every token here is a constant or a phrase owned
+/// by the code that raises it — see `peer::BLOCK_HEIGHT_MISMATCH`.
+fn protocol_error_warrants_eviction(message: &str) -> bool {
+    [
+        "Block request rejected",
+        "Failed to parse",
+        "Unexpected message",
+        "Handshake failed",
+        BLOCK_HEIGHT_MISMATCH,
+    ]
+    .iter()
+    .any(|token| message.contains(token))
+}
+
 struct PeerWorkerParams {
     peer_connection: PeerConnection,
     peer_id: String,
@@ -53,8 +72,16 @@ struct ChiaPeerPoolInner {
     peers: HashMap<String, PeerInfo>,
     peer_ids: Vec<String>,    // For round-robin
     round_robin_index: usize, // Track current position in round-robin
-    /// Highest height of a block this process actually fetched and parsed.
-    /// Self-evident, so it is trusted and never lowered.
+    /// Highest height this process requested a block for and received a block
+    /// whose own declared height matched the request.
+    ///
+    /// This is the only corroboration-free input to `pool_peak` and the only
+    /// one that survives every peer being evicted, so what it does and does not
+    /// attest matters. It attests that a peer answered *this* request with a
+    /// block that deserialized and named the height asked for. It does **not**
+    /// attest that the block is valid, or even that it parses: `parse_full_block`
+    /// runs later, in a separate task, and its failure does not retract this.
+    /// Never lowered.
     local_peak: Option<u32>,
     /// The last pool peak published as `Event::NewPeakHeight`. A de-duplication
     /// cache for the event stream, never the answer to "what is the peak?".
@@ -64,7 +91,9 @@ struct ChiaPeerPoolInner {
 /// Where a height observation came from, which decides how much it is trusted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PeakSource {
-    /// A block this process requested, received and parsed. Self-evident.
+    /// A block this process requested and received, whose own declared height
+    /// matched the request. See `ChiaPeerPoolInner::local_peak` for exactly
+    /// what that does and does not attest.
     LocallyFetched,
     /// A peer's unsolicited `NewPeakWallet`. Unverified and attacker-controlled.
     PeerAnnounced,
@@ -288,29 +317,30 @@ impl ChiaPeerPool {
                         // Ensure reader task finishes
                         let _ = reader_handle.await;
 
-                        // Emit disconnect best-effort
-                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(
-                            PeerDisconnectedEvent {
-                                peer_id: reader_peer_id.clone(),
-                                host: reader_host.clone(),
-                                port: port as u32,
-                                message: Some("Stream closed".to_string()),
-                            },
-                        ));
+                        Self::note_stream_closed(
+                            &inner_for_stream,
+                            &tx_stream_clone,
+                            &reader_peer_id,
+                            &reader_host,
+                            port,
+                            "Stream closed".to_string(),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         error!(
                             "Failed to start streaming for {}: {}",
                             peer_id_for_stream, e
                         );
-                        let _ = tx_stream_clone.try_send(Event::PeerDisconnected(
-                            PeerDisconnectedEvent {
-                                peer_id: peer_id_for_stream.clone(),
-                                host: host_for_stream.clone(),
-                                port: port as u32,
-                                message: Some(format!("Stream failed: {e}")),
-                            },
-                        ));
+                        Self::note_stream_closed(
+                            &inner_for_stream,
+                            &tx_stream_clone,
+                            &peer_id_for_stream,
+                            &host_for_stream,
+                            port,
+                            format!("Stream failed: {e}"),
+                        )
+                        .await;
                     }
                 }
             });
@@ -468,41 +498,18 @@ impl ChiaPeerPool {
                         );
                         last_error = e;
 
-                        // Check if this peer should be disconnected
-                        match &last_error {
-                            ChiaError::WebSocket(_) => {
-                                info!(
-                                    "Removing failed peer {} from pool due to WebSocket error",
-                                    peer_id
-                                );
-                                let _ = self.remove_peer(peer_id).await;
-                            }
-                            ChiaError::Connection(msg)
-                                if msg.contains("timeout")
-                                    || msg.contains("closed")
-                                    || msg.contains("failed") =>
-                            {
-                                info!(
-                                    "Removing failed peer {} from pool due to connection error",
-                                    peer_id
-                                );
-                                let _ = self.remove_peer(peer_id).await;
-                            }
-                            ChiaError::Protocol(msg) => {
-                                // Protocol errors indicate the peer is misbehaving or incompatible
-                                if msg.contains("Block request rejected")
-                                    || msg.contains("Failed to parse")
-                                    || msg.contains("Unexpected message")
-                                    || msg.contains("Handshake failed")
-                                {
-                                    info!("Removing failed peer {} from pool due to protocol error: {}", peer_id, msg);
-                                    let _ = self.remove_peer(peer_id).await;
-                                } else {
-                                    warn!("Minor protocol error for peer {}: {}. Not removing from pool", peer_id, msg);
-                                }
-                            }
-                            _ => {}
-                        }
+                        // No eviction here, deliberately. `peer_id` was chosen
+                        // as an availability probe; the request processor picks
+                        // the peer that actually serves the request by its own
+                        // round-robin, and the response carries no peer
+                        // identity. Evicting on this path therefore removes a
+                        // peer that did not fail, on the say-so of one that
+                        // did — and every eviction token is cheap for a peer to
+                        // produce. The worker path evicts the peer it actually
+                        // spoke to (`disconnect_peer_internal`), so nothing
+                        // attributable is lost by staying silent here.
+                        // Attribution on this seam is
+                        // `DIG-Network/dig_ecosystem#2394`.
                     }
                     Err(_) => {
                         last_error = ChiaError::Connection("Response channel closed".to_string());
@@ -557,6 +564,10 @@ impl ChiaPeerPool {
 
         guard.peer_ids.clear();
         guard.round_robin_index = 0;
+        // A peak with no peers behind it is a claim about a chain nobody is
+        // watching; the evidence and the conclusions drawn from it go together.
+        guard.local_peak = None;
+        guard.last_announced_peak = None;
         Ok(())
     }
 
@@ -581,10 +592,12 @@ impl ChiaPeerPool {
         Ok(guard.peer_ids.clone())
     }
 
-    /// The pool's current peak height.
+    /// The pool's current peak height, or `None` while no height is
+    /// corroborated — which includes a healthy single-peer pool.
     ///
-    /// Derived on read from live peers, so a peer that lied about its peak stops
-    /// counting the moment it is evicted or disconnects.
+    /// Derived on read rather than stored, so a peer that lied about its peak
+    /// stops counting the moment it is evicted or its streaming connection
+    /// closes. See `pool_peak` for the rule and the bound it buys.
     pub async fn get_highest_peak(&self) -> Option<u32> {
         Self::pool_peak(&*self.inner.read().await)
     }
@@ -594,20 +607,36 @@ impl ChiaPeerPool {
     /// A peer's `NewPeakWallet` is unsolicited and unverified, so a height is
     /// only believed once a second entry claims to be at or above it — which is
     /// exactly the second-highest per-entry claim. One hostile entry therefore
-    /// cannot move this value at all, however large its claim, and its claim
-    /// vanishes with it when it is removed. A locally fetched block needs no
-    /// corroboration: we parsed it ourselves.
+    /// cannot move this value at all, however large its claim, and that claim
+    /// stops counting the moment its evidence goes: when the entry is removed,
+    /// and also when the entry stays but its stream closes —
+    /// `note_stream_closed` clears the claim in place. A locally fetched block
+    /// needs no corroboration: we parsed it ourselves.
     ///
     /// **The bound this buys, stated exactly.** A pool entry is keyed by
     /// `host:port` (see `add_peer`), not by a proven identity — this crate has
     /// no cryptographic peer identity. So "a second entry" means a second
-    /// *endpoint*, and forging corroboration costs an attacker one more address
-    /// rather than one more independent operator. Two endpoints it controls
-    /// still move this value; `two_colluding_endpoints_still_move_the_pool_peak`
-    /// pins that, so the guarantee cannot be read as stronger than it is. This
-    /// is a real improvement over one endpoint poisoning the peak permanently,
-    /// and it is not a sybil defence. Choosing the right rule is
-    /// `DIG-Network/dig_ecosystem#2458`.
+    /// *endpoint*, and forging corroboration costs an attacker one more
+    /// endpoint rather than one more independent operator. That price is low
+    /// even without an attacker: dual-stack DNS discovery chains `ipv4_peers`
+    /// with `ipv6_peers` (`block_listener::start_auto_reconnect_task`), so one
+    /// ordinary host is naturally two entries. Two endpoints an attacker
+    /// controls still move this value;
+    /// `two_colluding_endpoints_still_move_the_pool_peak` pins that, so the
+    /// guarantee cannot be read as stronger than it is.
+    ///
+    /// **And it moves the value in both directions.** Two entries claiming a
+    /// *low* height hold the reported peak there for as long as at most one
+    /// entry claims the true tip — the ordinary state of a small pool, and of
+    /// any pool in the moments after a block is found. The result is silent
+    /// under-reporting, which is the more dangerous direction: a consumer that
+    /// believes it is caught up stops looking, and the blocks it skips carry
+    /// coin spends. What the rule genuinely removes is a *single* endpoint
+    /// moving the value at all, and a lie outliving the liar. It is not a
+    /// sybil defence in either direction;
+    /// `two_colluding_endpoints_can_also_hold_the_pool_peak_low` pins the
+    /// down-direction as an executable fact. Choosing a rule that resists both
+    /// is `DIG-Network/dig_ecosystem#2458`.
     ///
     /// Computed in one pass, holding no allocation: `record_peak` calls this
     /// under the pool write guard, on the block-delivery path.
@@ -625,6 +654,51 @@ impl ChiaPeerPool {
         }
 
         inner.local_peak.max(corroborated)
+    }
+
+    /// Handles the end of a peer's streaming connection: the peer's peak claim
+    /// is dropped and the consumer is told the stream closed.
+    ///
+    /// The two belong together. A claim's only evidence is the stream that
+    /// carried it, so reporting the peer as disconnected while its claim keeps
+    /// corroborating the pool peak is precisely the state an attacker wants:
+    /// announce, drop the socket, keep the peak.
+    ///
+    /// The pool entry itself stays. The streaming connection is separate from
+    /// the worker connection, so a peer that can no longer announce may still
+    /// serve blocks; evicting it here would throw that away.
+    ///
+    /// **The cost of keeping it, stated plainly.** `get_connected_peers`
+    /// reports pool entries, so it keeps reporting a peer whose stream is
+    /// gone, and `block_listener` only rediscovers peers when that list is
+    /// *empty* (`block_listener.rs:166`). A pool whose every stream has closed
+    /// therefore never re-establishes one: it goes silent — no blocks, no
+    /// peaks — while still reporting a full set of connected peers. Retaining
+    /// the entry buys a usable worker connection and pays for it with that
+    /// blind spot. Making liveness observable rather than inferred from the
+    /// entry list is `DIG-Network/dig_ecosystem#2474`; re-establishing a dead
+    /// stream without evicting the entry is `#2394`.
+    async fn note_stream_closed(
+        inner: &Arc<RwLock<ChiaPeerPoolInner>>,
+        event_tx: &mpsc::Sender<Event>,
+        peer_id: &str,
+        host: &str,
+        port: u16,
+        message: String,
+    ) {
+        {
+            let mut guard = inner.write().await;
+            if let Some(peer_info) = guard.peers.get_mut(peer_id) {
+                peer_info.peak_height = None;
+            }
+        }
+
+        let _ = event_tx.try_send(Event::PeerDisconnected(PeerDisconnectedEvent {
+            peer_id: peer_id.to_string(),
+            host: host.to_string(),
+            port: port as u32,
+            message: Some(message),
+        }));
     }
 
     fn start_request_processor(&self, mut receiver: mpsc::Receiver<PoolRequest>) {
@@ -991,12 +1065,7 @@ impl ChiaPeerPool {
                                         true
                                     }
                                     ChiaError::Protocol(msg) => {
-                                        // Protocol errors indicate the peer is misbehaving or incompatible
-                                        if msg.contains("Block request rejected")
-                                            || msg.contains("Failed to parse")
-                                            || msg.contains("Unexpected message")
-                                            || msg.contains("Handshake failed")
-                                        {
+                                        if protocol_error_warrants_eviction(msg) {
                                             error!("Protocol error detected for peer {}: {}. Marking for disconnection", params.peer_id, msg);
                                             true
                                         } else {
@@ -1119,8 +1188,13 @@ impl ChiaPeerPool {
                     height, params.peer_id
                 );
 
-                // Update peak height tracking
-                Self::update_peak_height(height as u32, params).await;
+                // The height of the block we received, not the height we asked
+                // for: `local_peak` is trusted without corroboration, so it
+                // must name the block that was actually delivered. The two are
+                // equal by the time we get here — `request_block_by_height`
+                // rejects a mismatch — and reading the block keeps it that way
+                // if that guard ever moves.
+                Self::update_peak_height(block.reward_chain_block.height, params).await;
 
                 Ok(block)
             }
@@ -1186,15 +1260,21 @@ impl ChiaPeerPool {
             guard.local_peak = guard.local_peak.max(Some(block_height));
         }
 
+        // The cache tracks the derived peak in both directions but only ever
+        // emits on a rise. Latching it at a high-water mark would let a lie
+        // that has since been evicted silence `NewPeakHeight` permanently;
+        // on-rise-only halves the traffic compared to emitting every change. The
+        // actual bound is the 32-slot event channel, which drops events when full.
         let old_peak = guard.last_announced_peak;
         let Some(new_peak) = Self::pool_peak(&guard) else {
+            guard.last_announced_peak = None;
             return;
         };
+        guard.last_announced_peak = Some(new_peak);
         if old_peak.is_some_and(|announced| new_peak <= announced) {
             return;
         }
 
-        guard.last_announced_peak = Some(new_peak);
         info!("Pool peak height is now {}", new_peak);
         drop(guard);
 
@@ -1324,6 +1404,16 @@ mod tests {
         .await;
     }
 
+    fn disconnected_peers(rx: &mut mpsc::Receiver<Event>) -> Vec<String> {
+        let mut ids = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let Event::PeerDisconnected(peer) = event {
+                ids.push(peer.peer_id);
+            }
+        }
+        ids
+    }
+
     fn announced_peaks(rx: &mut mpsc::Receiver<Event>) -> Vec<u32> {
         let mut heights = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -1422,6 +1512,198 @@ mod tests {
         assert_eq!(pool.get_highest_peak().await, Some(u32::MAX));
     }
 
+    /// A peer's claim is only as good as the stream that carried it. Once the
+    /// streaming task ends, the peer is reported to the consumer as
+    /// disconnected while its `worker_tx` may still serve blocks — so the claim
+    /// goes and the entry stays.
+    ///
+    /// Two colluding endpoints announcing `u32::MAX` and then dropping their
+    /// sockets is the case this exists for: the honest height must come back.
+    #[tokio::test]
+    async fn a_peer_whose_stream_closed_stops_corroborating() {
+        let (pool, mut events) = pool_with_events();
+        for peer in ["liar-a", "liar-b", "honest-a", "honest-b"] {
+            register_peer(&pool, peer).await;
+        }
+        announce(&pool, "liar-a", u32::MAX).await;
+        announce(&pool, "liar-b", u32::MAX).await;
+        announce(&pool, "honest-a", HONEST).await;
+        announce(&pool, "honest-b", HONEST).await;
+        assert_eq!(pool.get_highest_peak().await, Some(u32::MAX));
+        let _ = announced_peaks(&mut events);
+
+        for liar in ["liar-a", "liar-b"] {
+            ChiaPeerPool::note_stream_closed(
+                &pool.inner,
+                pool.event_tx.as_ref().unwrap(),
+                liar,
+                "10.0.0.1",
+                8444,
+                "Stream closed".to_string(),
+            )
+            .await;
+        }
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+        assert!(
+            pool.get_connected_peers()
+                .await
+                .unwrap()
+                .contains(&"liar-a".to_string()),
+            "the entry must survive: its worker connection can still serve blocks"
+        );
+        assert!(
+            disconnected_peers(&mut events).contains(&"liar-a".to_string()),
+            "the consumer must still be told the stream closed"
+        );
+    }
+
+    /// A peak with no peers behind it is a claim about a chain nobody is
+    /// watching. `shutdown` drains the evidence, so it must drain the
+    /// conclusions drawn from it too.
+    #[tokio::test]
+    async fn shutdown_clears_the_peak_and_its_announcement_cache() {
+        let (pool, _events) = pool_with_events();
+        register_peer(&pool, "only-peer").await;
+        ChiaPeerPool::record_peak(
+            &pool.inner,
+            "only-peer",
+            pool.event_tx.as_ref(),
+            HONEST,
+            PeakSource::LocallyFetched,
+        )
+        .await;
+
+        pool.shutdown().await.unwrap();
+
+        let guard = pool.inner.read().await;
+        assert_eq!(ChiaPeerPool::pool_peak(&guard), None);
+        assert_eq!(guard.local_peak, None);
+        assert_eq!(guard.last_announced_peak, None);
+    }
+
+    /// The trusted floor only rises. Fetching an older block — a range backfill
+    /// is the ordinary way this happens — must not lower the height the pool
+    /// has already parsed a block at, or a consumer's confirmation-depth
+    /// arithmetic goes backwards for reasons no peer caused.
+    #[tokio::test]
+    async fn a_later_lower_locally_fetched_height_does_not_lower_the_floor() {
+        let (pool, _events) = pool_with_events();
+        register_peer(&pool, "only-peer").await;
+
+        for height in [HONEST, HONEST - 500] {
+            ChiaPeerPool::record_peak(
+                &pool.inner,
+                "only-peer",
+                pool.event_tx.as_ref(),
+                height,
+                PeakSource::LocallyFetched,
+            )
+            .await;
+        }
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+    }
+
+    /// A transient lie must not durably silence the event stream.
+    ///
+    /// The announcement cache exists to keep `NewPeakHeight` on-rise-only, so a
+    /// peer cannot flood a 32-slot channel. Latched at a height no honest peer
+    /// will ever reach, that same cache silences the stream forever while
+    /// `get_highest_peak` quietly recovers — a durable denial from an attack
+    /// that already ended. The cache must follow the derived peak down without
+    /// emitting.
+    #[tokio::test]
+    async fn a_lie_that_left_the_pool_does_not_silence_the_event_stream() {
+        let (pool, mut events) = pool_with_events();
+        for peer in ["attacker-a", "attacker-b", "honest-a", "honest-b"] {
+            register_peer(&pool, peer).await;
+        }
+
+        announce(&pool, "attacker-a", u32::MAX).await;
+        announce(&pool, "attacker-b", u32::MAX).await;
+        pool.remove_peer("attacker-a".to_string()).await.unwrap();
+        pool.remove_peer("attacker-b".to_string()).await.unwrap();
+        let _ = announced_peaks(&mut events);
+
+        announce(&pool, "honest-a", HONEST).await;
+        announce(&pool, "honest-b", HONEST).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+        assert!(
+            announced_peaks(&mut events).contains(&HONEST),
+            "the event stream stayed silent after the liar left"
+        );
+    }
+
+    /// Emission stays on-rise-only: following the peak down must not itself
+    /// announce, or every fall would cost an event as well as every rise.
+    ///
+    /// This halves the traffic; it does not bound it. Two colluding endpoints
+    /// can still announce high, drop their streams so the claims clear,
+    /// reconnect and announce again, for one event per cycle without limit —
+    /// the rule prices each event at a reconnect, it does not cap them. The
+    /// actual bound is the channel: `try_send` drops when its 32 slots are
+    /// full.
+    #[tokio::test]
+    async fn a_falling_pool_peak_is_not_announced() {
+        let (pool, mut events) = pool_with_events();
+        for peer in ["a", "b", "c"] {
+            register_peer(&pool, peer).await;
+        }
+        announce(&pool, "a", HONEST).await;
+        announce(&pool, "b", HONEST).await;
+        let _ = announced_peaks(&mut events);
+
+        pool.remove_peer("b".to_string()).await.unwrap();
+        announce(&pool, "c", HONEST - 100).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(HONEST - 100));
+        assert!(
+            announced_peaks(&mut events).is_empty(),
+            "a falling peak must not produce an event"
+        );
+    }
+
+    /// A peer answering a height other than the one requested is misbehaving,
+    /// and `peer_pool` decides that by substring. Pinning the shared constant
+    /// here is what stops the guard's wording drifting away from the rule that
+    /// acts on it.
+    #[test]
+    fn a_height_mismatch_is_an_evictable_protocol_error() {
+        assert!(protocol_error_warrants_eviction(&format!(
+            "{BLOCK_HEIGHT_MISMATCH}: requested height 10, peer answered with height 1"
+        )));
+        assert!(!protocol_error_warrants_eviction(
+            "Timeout waiting for block response"
+        ));
+    }
+
+    /// The other direction of the same bound, and the more dangerous one.
+    ///
+    /// Two colluding entries claiming a *low* height hold the reported peak
+    /// there while at most one entry claims the tip — which is the ordinary
+    /// state of a small pool, and of every pool in the moment after a block is
+    /// found. Under-reporting is worse than over-reporting here: a listener
+    /// that believes it is caught up stops looking, and the blocks it skips
+    /// carry coin spends. Pinned so that changing the rule must fail this test
+    /// and rewrite the doc with it. The rule itself is
+    /// `DIG-Network/dig_ecosystem#2458`.
+    #[tokio::test]
+    async fn two_colluding_endpoints_can_also_hold_the_pool_peak_low() {
+        const STALE: u32 = HONEST - 500_000;
+        let (pool, _events) = pool_with_events();
+        for peer in ["10.0.0.1:8444", "10.0.0.1:8445", "honest"] {
+            register_peer(&pool, peer).await;
+        }
+
+        announce(&pool, "10.0.0.1:8444", STALE).await;
+        announce(&pool, "10.0.0.1:8445", STALE).await;
+        announce(&pool, "honest", HONEST).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(STALE));
+    }
+
     /// Duplicate claims must corroborate each other, which is what makes the
     /// rule "a second entry agrees" rather than "a second, strictly lower
     /// entry exists". A single-pass top-two that mishandles ties would report
@@ -1438,5 +1720,117 @@ mod tests {
         announce(&pool, "c", HONEST - 1).await;
 
         assert_eq!(pool.get_highest_peak().await, Some(HONEST));
+    }
+
+    /// A pool whose request processor is *not* running, so the test — rather
+    /// than a round-robin worker — decides what every request answers.
+    ///
+    /// This is the seam the mis-attributed eviction lived on: the peer chosen
+    /// in `get_block_by_height_with_failover` is only an availability probe,
+    /// and the peer that actually serves the request is picked independently
+    /// by the processor. Holding the receiver here makes that separation
+    /// explicit instead of incidental.
+    fn pool_without_processor() -> (ChiaPeerPool, mpsc::Receiver<PoolRequest>) {
+        let (request_sender, request_receiver) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
+        let pool = ChiaPeerPool {
+            inner: Arc::new(RwLock::new(ChiaPeerPoolInner {
+                peers: HashMap::new(),
+                peer_ids: Vec::new(),
+                round_robin_index: 0,
+                local_peak: None,
+                last_announced_peak: None,
+            })),
+            request_sender,
+            cancel_token: CancellationToken::new(),
+            tasks: Arc::new(Mutex::new(Vec::new())),
+            event_tx: None,
+        };
+        (pool, request_receiver)
+    }
+
+    /// A wrong-height answer must not cost an uninvolved peer its place.
+    ///
+    /// The selecting path cannot attribute a failure: it never learns which
+    /// peer served the request, so evicting the peer it happened to probe
+    /// removes an honest peer on a hostile peer's say-so. With three retries
+    /// per call and a `BLOCK_HEIGHT_MISMATCH` that is free to produce, one
+    /// hostile peer would otherwise empty the pool. Attributable eviction is
+    /// the worker path's job (`disconnect_peer_internal`), which knows the
+    /// peer it spoke to.
+    #[tokio::test]
+    async fn a_wrong_height_answer_evicts_no_peer_on_the_selecting_path() {
+        let (pool, mut requests) = pool_without_processor();
+        for peer in ["honest-a", "honest-b", "honest-c"] {
+            register_peer(&pool, peer).await;
+        }
+
+        let responder = tokio::spawn(async move {
+            while let Some(PoolRequest::GetBlockByHeight {
+                height,
+                response_tx,
+            }) = requests.recv().await
+            {
+                let _ = response_tx.send(Err(ChiaError::Protocol(format!(
+                    "{BLOCK_HEIGHT_MISMATCH}: requested height {height}, peer answered with height 1"
+                ))));
+            }
+        });
+
+        let error = pool
+            .get_block_by_height_with_failover(10_000_000, 3)
+            .await
+            .expect_err("a wrong-height answer must not satisfy the request");
+        assert!(error.to_string().contains(BLOCK_HEIGHT_MISMATCH), "{error}");
+
+        let mut remaining = pool.get_connected_peers().await.unwrap();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec!["honest-a", "honest-b", "honest-c"],
+            "an unattributable failure evicted peers that never answered it"
+        );
+
+        responder.abort();
+    }
+
+    /// The announcement cache must *follow the derived peak down*, not latch at
+    /// a high-water mark — and it must do so on a pool that never becomes
+    /// uncorroborated.
+    ///
+    /// The `None` reset in `record_peak` is the other half of the same fix and
+    /// covers every path that passes through an uncorroborated moment. This
+    /// pool keeps two claims alive throughout, so the reset is never reached
+    /// and only the follow-down assignment can produce the final event.
+    /// Restoring the 0.4.0 latch — assigning the cache only when the new peak
+    /// is higher — leaves the cache at 100 and swallows the rise to 70.
+    #[tokio::test]
+    async fn the_announcement_cache_follows_a_falling_peak_down() {
+        let (pool, mut events) = pool_with_events();
+        for peer in ["high-a", "high-b", "low-a", "low-b"] {
+            register_peer(&pool, peer).await;
+        }
+
+        announce(&pool, "high-a", 100).await;
+        announce(&pool, "high-b", 100).await;
+        announce(&pool, "low-a", 50).await;
+        announce(&pool, "low-b", 50).await;
+        assert_eq!(pool.get_highest_peak().await, Some(100));
+
+        // The peak falls to 50: three claims remain, so corroboration — and
+        // with it the derived peak — never disappears.
+        pool.remove_peer("high-a".to_string()).await.unwrap();
+        assert_eq!(pool.get_highest_peak().await, Some(50));
+        announce(&pool, "low-b", 50).await;
+        let _ = announced_peaks(&mut events);
+
+        // A rise that is still below the old high-water mark of 100.
+        announce(&pool, "low-a", 70).await;
+
+        assert_eq!(pool.get_highest_peak().await, Some(70));
+        assert_eq!(
+            announced_peaks(&mut events),
+            vec![70],
+            "a peak below the highest ever seen was never announced"
+        );
     }
 }
