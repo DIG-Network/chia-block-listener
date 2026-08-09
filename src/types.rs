@@ -14,10 +14,30 @@ pub struct PeerDisconnectedEvent {
     pub message: Option<String>,
 }
 
+/// Emitted when the pool's peak height *rises*.
+///
+/// The peak is a property of the pool, not of any one peer: it is the highest
+/// height that either two pool entries independently claim, or that this
+/// process requested a block for and received a matching block at. So this
+/// event says the pool's view of the chain moved forward — never that the peer
+/// named in it announced anything in particular.
+///
+/// A falling peak — a peer evicted, a streaming connection closed — is not
+/// emitted; it is visible only by polling `get_highest_peak`. Emission is
+/// on-rise-only so that a peer cannot drive the event channel.
 #[derive(Clone, Debug)]
 pub struct NewPeakHeightEvent {
+    /// The pool peak last announced by this event, or `None` if this is the
+    /// first announcement or the pool peak had since become uncorroborated.
+    /// It is the previously *announced* value, not a previous claim by
+    /// `peer_id`, and it may be lower than the peak reported between the two
+    /// events.
     pub old_peak: Option<u32>,
+    /// The pool peak now. Strictly greater than `old_peak` when that is set.
     pub new_peak: u32,
+    /// The peer whose observation triggered the recomputation. This peer is
+    /// the *occasion* for the event, not its source: it need never have
+    /// claimed `new_peak`, which is generally corroborated by other entries.
     pub peer_id: String,
 }
 

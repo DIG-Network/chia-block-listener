@@ -13,7 +13,7 @@ A high-performance Chia blockchain listener for Node.js, built with Rust and NAP
 - **Transaction Analysis**: Parse CLVM puzzles and solutions from coin spends
 - **Historical Block Access**: Retrieve blocks by height or ranges with automatic load balancing
 - **Connection Pool**: ChiaPeerPool provides automatic load balancing and rate limiting for historical queries
-- **Peak Height Tracking**: Monitor blockchain sync progress across all connected peers
+- **Peak Height Tracking**: Follow sync progress from peak heights corroborated by more than one peer
 - **DNS Peer Discovery**: Automatic peer discovery using Chia network DNS introducers with IPv4/IPv6 support
 - **Cross-platform Support**: Works on Windows, macOS, and Linux (x64 and ARM64)
 - **TypeScript Support**: Complete TypeScript definitions with IntelliSense
@@ -303,9 +303,25 @@ Gets the list of currently connected peer IDs.
 
 ##### `getPeakHeight(): Promise<number | null>`
 
-Gets the highest blockchain peak height seen across all connected peers.
+Gets the pool's current peak height: the highest height that is *corroborated*.
 
-**Returns:** The highest peak height as a number, or null if no peaks have been received yet
+A peer's peak announcement is unsolicited and unverified, so a single peer's
+claim is not evidence. A height counts once **two pool entries** claim to be at
+or above it, or once this process has itself requested a block at that height
+and received a block that declared it. The value is derived when you call this,
+not stored, so a peer's claim stops counting as soon as it is evicted or its
+streaming connection closes.
+
+**Returns:** The corroborated peak height, or `null` when no height is
+corroborated. Note that `null` does **not** mean no peaks have been received:
+
+- a pool with a single peer returns `null` for peer announcements however many
+  it receives, until a block is fetched;
+- two entries can be one host, since DNS discovery yields an IPv4 and an IPv6
+  address for the same node — corroboration counts endpoints, not identities;
+- two colluding endpoints can move this value, in either direction. Two entries
+  claiming a low height hold the reported peak low while only one entry claims
+  the tip. Treat this as a liveness signal, not as a trusted chain tip.
 
 ##### `on(event, callback): void`
 
@@ -362,7 +378,11 @@ Fired when a peer is removed from the pool or disconnects.
 
 #### `newPeakHeight`
 
-Fired when a new highest blockchain peak is discovered.
+Fired when the pool's corroborated peak height *rises* (see `getPeakHeight`).
+
+A falling peak — a peer evicted, a stream closed — is not fired; poll
+`getPeakHeight` if you need to observe that. Emission is on-rise-only so that
+a peer cannot drive the event channel.
 
 **Callback:** `(event: NewPeakHeightEvent) => void`
 
@@ -475,9 +495,14 @@ interface PeerDisconnectedEvent {
 
 ```typescript
 interface NewPeakHeightEvent {
-  oldPeak: number | null  // Previous highest peak (null if first peak)
-  newPeak: number        // New highest peak height
-  peerId: string         // Peer that discovered this peak
+  // The pool peak last announced by this event; null if this is the first
+  // announcement, or if the pool peak had since become uncorroborated.
+  oldPeak: number | null
+  // The pool peak now. Greater than oldPeak whenever that is set.
+  newPeak: number
+  // The peer whose observation triggered the recomputation. The occasion for
+  // the event, not its source: this peer need never have claimed newPeak.
+  peerId: string
 }
 ```
 
@@ -699,9 +724,10 @@ pool.on('newPeakHeight', (event) => {
 await pool.addPeer('node1.chia.net', 8444, 'mainnet')
 await pool.addPeer('node2.chia.net', 8444, 'mainnet')
 
-// Check current peak
+// Check current peak. Null until two entries corroborate a height, or until
+// a block has been fetched — so a single-peer pool reports null here.
 const peak = await pool.getPeakHeight()
-console.log(`Current highest peak: ${peak || 'None yet'}`)
+console.log(`Current peak: ${peak ?? 'not corroborated yet'}`)
 
 // Fetch some blocks to trigger peak updates
 await pool.getBlockByHeight(5000000)
@@ -711,11 +737,15 @@ await pool.getBlockByHeight(5200000)
 // Monitor sync status
 setInterval(async () => {
   const peak = await pool.getPeakHeight()
-  if (peak) {
-    const estimatedCurrent = 5200000 + Math.floor((Date.now() / 1000 - 1700000000) / 18.75)
-    const syncPercentage = (peak / estimatedCurrent * 100).toFixed(2)
-    console.log(`Sync status: ${syncPercentage}% (peak: ${peak})`)
+  if (peak === null) {
+    // Not an error: no height is corroborated yet. Add a second peer, or
+    // fetch a block, before reading anything into this.
+    console.log('Sync status: peak not corroborated yet')
+    return
   }
+  const estimatedCurrent = 5200000 + Math.floor((Date.now() / 1000 - 1700000000) / 18.75)
+  const syncPercentage = (peak / estimatedCurrent * 100).toFixed(2)
+  console.log(`Sync status: ${syncPercentage}% (peak: ${peak})`)
 }, 60000) // Check every minute
 ```
 

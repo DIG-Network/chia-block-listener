@@ -1,6 +1,6 @@
 [package]
 name = "dig-dns-discovery"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "DNS resolver for Chia peers"
 license = "MIT"

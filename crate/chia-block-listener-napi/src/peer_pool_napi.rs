@@ -147,6 +147,13 @@ impl ChiaPeerPool {
         })
     }
 
+    /// The pool's corroborated peak height, or `null` when no height is
+    /// corroborated.
+    ///
+    /// `null` does not mean nothing was received: a single peer's announcement
+    /// is not evidence on its own, so a one-peer pool reports `null` until a
+    /// block is fetched. See `ChiaPeerPool::pool_peak` in the core crate for
+    /// the rule and the bound it buys.
     #[napi(js_name = "getPeakHeight")]
     pub async fn get_peak_height(&self) -> Result<Option<u32>> {
         Ok(self.listener.get_highest_peak().await)

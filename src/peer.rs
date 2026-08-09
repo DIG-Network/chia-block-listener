@@ -32,6 +32,55 @@ fn describe_close_reason(frame: Option<&CloseFrame<'_>>) -> String {
     )
 }
 
+/// The longest peer-authored string rendered into a log line or an error.
+///
+/// A handshake is an ordinary data message, so its strings are bounded only by
+/// the 64 MiB WebSocket frame limit — three orders of magnitude above anything
+/// a real `network_id` or version needs, and the resulting error is logged once
+/// per reconnect attempt.
+const MAX_PEER_STRING: usize = 64;
+
+/// Renders a peer-authored string for a log line or an error message.
+///
+/// Two hazards, both closed here. `{:?}` escapes control characters, so a `\n`
+/// cannot forge a log line — the same treatment `describe_close_reason` gives a
+/// close frame. Truncation bounds the volume, which a close frame did not need:
+/// tungstenite caps a close reason at 123 bytes, while a handshake field is
+/// capped only by the frame size.
+fn describe_peer_string(value: &str) -> String {
+    let truncated: String = value.chars().take(MAX_PEER_STRING).collect();
+    if truncated.len() < value.len() {
+        format!("{truncated:?} (truncated)")
+    } else {
+        format!("{truncated:?}")
+    }
+}
+
+/// The substring `peer_pool` matches to evict a peer that answered the wrong
+/// block. Kept as a constant so the guard and the eviction rule cannot drift.
+pub(crate) const BLOCK_HEIGHT_MISMATCH: &str = "Block height mismatch";
+
+/// Accepts a `RespondBlock` only when it answers the request it claims to, and
+/// yields the height actually delivered.
+///
+/// A `RequestBlock` carries a height and nothing else identifies the response,
+/// so without this check any parseable block satisfies any request. That is not
+/// merely untidy: `peer_pool` records a fetched height as a *locally observed*
+/// peak, trusted with no corroboration because "we parsed it ourselves". A peer
+/// free to answer height 1 to a request for height 10_000_000 would therefore
+/// set the trusted peak to a height that does not exist. A peer answering a
+/// height other than the one asked for is misbehaving whatever it is aimed at,
+/// so this is a first-class protocol error.
+fn accepted_block_height(requested: u64, block: &FullBlock) -> Result<u32, ChiaError> {
+    let delivered = block.reward_chain_block.height;
+    if u64::from(delivered) != requested {
+        return Err(ChiaError::Protocol(format!(
+            "{BLOCK_HEIGHT_MISMATCH}: requested height {requested}, peer answered with height {delivered}"
+        )));
+    }
+    Ok(delivered)
+}
+
 /// Builds the error reported when a peer closes the socket mid-request.
 ///
 /// The word "closed" is load-bearing: `peer_pool` substring-matches it on the
@@ -163,13 +212,15 @@ impl PeerConnection {
                         if peer_handshake.network_id != self.network_id {
                             return Err(ChiaError::Protocol(format!(
                                 "Network ID mismatch: expected {}, got {}",
-                                self.network_id, peer_handshake.network_id
+                                self.network_id,
+                                describe_peer_string(&peer_handshake.network_id)
                             )));
                         }
 
                         info!(
                             "Handshake successful with {} (protocol: {})",
-                            self.host, peer_handshake.protocol_version
+                            self.host,
+                            describe_peer_string(&peer_handshake.protocol_version)
                         );
                         Ok(())
                     } else {
@@ -417,6 +468,7 @@ impl PeerConnection {
                                                     block.transactions_generator.as_ref().map(|g| g.len()).unwrap_or(0),
                                                     block.foliage_transaction_block.is_some()
                                                 );
+                                                accepted_block_height(height, &block)?;
                                                 return Ok(block);
                                             }
                                             Err(e) => {
@@ -501,6 +553,7 @@ impl PeerConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arbitrary::Arbitrary;
     use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
     fn close_frame(reason: &str) -> CloseFrame<'_> {
@@ -544,5 +597,89 @@ mod tests {
     #[test]
     fn missing_close_frame_is_described() {
         assert_eq!(describe_close_reason(None), "no close frame");
+    }
+
+    /// Builds a real `FullBlock` sitting at `height`.
+    ///
+    /// Every other field is filled from an all-zero `Arbitrary` source: the
+    /// guard under test reads exactly one field, and a peer's block is
+    /// otherwise attacker-shaped anyway.
+    fn block_at_height(height: u32) -> FullBlock {
+        let zeros = [0u8; 4096];
+        let mut source = arbitrary::Unstructured::new(&zeros);
+        let mut block = FullBlock::arbitrary(&mut source).expect("arbitrary FullBlock");
+        block.reward_chain_block.height = height;
+        block
+    }
+
+    /// The block a peer sends back is only identified by the height it carries,
+    /// so a peer that answers a *different* height than asked has answered a
+    /// question nobody put to it. Height 1 is a real, long-final block: the
+    /// cheapest thing a hostile peer can hand back to a request for a height
+    /// that does not exist yet.
+    #[test]
+    fn a_block_from_a_different_height_is_rejected() {
+        let error = accepted_block_height(10_000_000, &block_at_height(1))
+            .expect_err("a block from height 1 must not answer a request for height 10_000_000");
+
+        let message = error.to_string();
+        assert!(message.contains(BLOCK_HEIGHT_MISMATCH), "{message}");
+        assert!(message.contains("10000000"), "{message}");
+        assert!(message.contains('1'), "{message}");
+    }
+
+    /// The mismatch is rejected in both directions: a peer running ahead of the
+    /// request is as unidentified as one running behind it.
+    #[test]
+    fn a_block_from_a_later_height_is_also_rejected() {
+        assert!(accepted_block_height(100, &block_at_height(101)).is_err());
+    }
+
+    /// The height the caller may record is the one the block carries, not the
+    /// one the caller asked for. Asserting the returned value — rather than
+    /// only `is_ok()` — is what keeps the provenance in the block.
+    #[test]
+    fn a_matching_block_yields_the_height_it_carries() {
+        assert_eq!(
+            accepted_block_height(7_654_321, &block_at_height(7_654_321)).unwrap(),
+            7_654_321
+        );
+    }
+
+    /// A handshake field is peer-authored and, unlike a close reason, bounded
+    /// only by the WebSocket frame size. The rendering must neither let a peer
+    /// forge log lines nor let it choose how much of the log it occupies.
+    #[test]
+    fn peer_strings_are_escaped_and_bounded() {
+        let hostile = format!("mainnet\r\nERROR forged{}", "A".repeat(10_000));
+
+        let rendered = describe_peer_string(&hostile);
+
+        assert!(!rendered.contains('\n'), "{rendered}");
+        assert!(!rendered.contains('\r'), "{rendered}");
+        assert!(
+            rendered.len() < 128,
+            "a peer chose {} bytes of log line",
+            rendered.len()
+        );
+        assert!(rendered.contains("truncated"), "{rendered}");
+    }
+
+    /// An ordinary value must survive intact, or the bound is being paid for
+    /// with unreadable logs.
+    #[test]
+    fn an_ordinary_peer_string_is_rendered_whole() {
+        assert_eq!(describe_peer_string("mainnet"), "\"mainnet\"");
+    }
+
+    /// The bound is pinned from both sides: at the limit nothing is dropped,
+    /// one character over is truncated.
+    #[test]
+    fn the_peer_string_bound_holds_at_the_limit() {
+        let at_limit = "a".repeat(MAX_PEER_STRING);
+        assert!(!describe_peer_string(&at_limit).contains("truncated"));
+
+        let one_over = "a".repeat(MAX_PEER_STRING + 1);
+        assert!(describe_peer_string(&one_over).contains("truncated"));
     }
 }
