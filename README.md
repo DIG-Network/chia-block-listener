@@ -297,9 +297,14 @@ Shuts down the pool and disconnects all peers.
 
 ##### `getConnectedPeers(): Promise<string[]>`
 
-Gets the list of currently connected peer IDs.
+Gets the list of peers currently in the pool.
 
 **Returns:** Array of peer ID strings (format: "host:port")
+
+A peer whose streaming connection has closed stays in this list: its separate
+worker connection can still serve `getBlockByHeight`. So this answers "which
+peers can the pool ask for a block", not "which peers are streaming"; a pool
+that has stopped emitting blocks and peaks can still report a full list.
 
 ##### `getPeakHeight(): Promise<number | null>`
 
@@ -381,8 +386,10 @@ Fired when a peer is removed from the pool or disconnects.
 Fired when the pool's corroborated peak height *rises* (see `getPeakHeight`).
 
 A falling peak — a peer evicted, a stream closed — is not fired; poll
-`getPeakHeight` if you need to observe that. Emission is on-rise-only so that
-a peer cannot drive the event channel.
+`getPeakHeight` if you need to observe that. Emission is on-rise-only so that a
+fall does not cost an event as well as a rise; it halves the traffic rather
+than bounding it, and the hard bound is the event channel, which drops events
+when it is full.
 
 **Callback:** `(event: NewPeakHeightEvent) => void`
 
@@ -495,8 +502,11 @@ interface PeerDisconnectedEvent {
 
 ```typescript
 interface NewPeakHeightEvent {
-  // The pool peak last announced by this event; null if this is the first
+  // The pool peak this event stream last cached; null if this is the first
   // announcement, or if the pool peak had since become uncorroborated.
+  // Cached, not announced: a fall is never fired but does update the cache,
+  // so after a fall this reports a value you were never sent. Read it as
+  // what the next rise is measured against.
   oldPeak: number | null
   // The pool peak now. Greater than oldPeak whenever that is set.
   newPeak: number

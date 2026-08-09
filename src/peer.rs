@@ -40,6 +40,19 @@ fn describe_close_reason(frame: Option<&CloseFrame<'_>>) -> String {
 /// per reconnect attempt.
 const MAX_PEER_STRING: usize = 64;
 
+/// The longest rendering `describe_peer_string` can return, in bytes.
+///
+/// `MAX_PEER_STRING` bounds *characters*, and `{:?}` expands a non-printable
+/// character to a `\u{...}` escape of up to ten bytes, so the byte length of a
+/// rendering is several times its character count. Stated here because the
+/// character bound alone reads as a byte bound and is not one:
+/// `the_peer_string_bound_is_in_characters_not_bytes` pins the difference.
+///
+/// Derived rather than enforced: the bound follows from the character limit,
+/// so it exists to be asserted against, not to be applied.
+#[cfg(test)]
+const MAX_PEER_STRING_RENDERED_BYTES: usize = MAX_PEER_STRING * 10 + r#""" (truncated)"#.len();
+
 /// Renders a peer-authored string for a log line or an error message.
 ///
 /// Two hazards, both closed here. `{:?}` escapes control characters, so a `\n`
@@ -47,6 +60,9 @@ const MAX_PEER_STRING: usize = 64;
 /// close frame. Truncation bounds the volume, which a close frame did not need:
 /// tungstenite caps a close reason at 123 bytes, while a handshake field is
 /// capped only by the frame size.
+///
+/// The truncation bound is in **characters**, not bytes — see
+/// `MAX_PEER_STRING_RENDERED_BYTES` for what that costs in the worst case.
 fn describe_peer_string(value: &str) -> String {
     let truncated: String = value.chars().take(MAX_PEER_STRING).collect();
     if truncated.len() < value.len() {
@@ -71,6 +87,16 @@ pub(crate) const BLOCK_HEIGHT_MISMATCH: &str = "Block height mismatch";
 /// set the trusted peak to a height that does not exist. A peer answering a
 /// height other than the one asked for is misbehaving whatever it is aimed at,
 /// so this is a first-class protocol error.
+///
+/// **What this buys, and what it does not.** It is not verification: nothing
+/// here checks the block against a proof of space or time, a signature, or a
+/// second source. What it buys is a *bound* — `local_peak` cannot exceed the
+/// highest height this process asked for. Within this crate that holds,
+/// because a requested height originates only from the consumer and never from
+/// a peer announcement. A consumer that fetches the height it just learned
+/// from `NewPeakHeight` or `get_highest_peak` hands a peer-influenced height
+/// back to peers and collapses the bound to `pool_peak`'s two-endpoint bar.
+/// The guarantee is only as strong as the caller's choice of height.
 fn accepted_block_height(requested: u64, block: &FullBlock) -> Result<u32, ChiaError> {
     let delivered = block.reward_chain_block.height;
     if u64::from(delivered) != requested {
@@ -416,8 +442,19 @@ impl PeerConnection {
     ) -> Result<FullBlock, ChiaError> {
         debug!("Requesting block at height {}", height);
 
+        // `RequestBlock` carries a `u32`, so a larger height has no wire
+        // representation. Truncating it would ask for `height % 2^32` and then
+        // reject every honest answer as a height mismatch, evicting peers for
+        // answering correctly.
+        let requested = u32::try_from(height).map_err(|_| {
+            ChiaError::Protocol(format!(
+                "Requested block height {height} exceeds the protocol maximum of {}",
+                u32::MAX
+            ))
+        })?;
+
         let request = RequestBlock {
-            height: height as u32,
+            height: requested,
             include_transaction_block: true,
         };
 
@@ -681,5 +718,229 @@ mod tests {
 
         let one_over = "a".repeat(MAX_PEER_STRING + 1);
         assert!(describe_peer_string(&one_over).contains("truncated"));
+    }
+
+    // ---- Seam coverage -------------------------------------------------
+    //
+    // The guards above are exercised as functions. These tests exercise them
+    // where production calls them: over a real WebSocket, against a peer whose
+    // answers the test writes. Deleting a *call site* -- as opposed to
+    // neutering the function -- is a mutation the direct tests cannot see.
+
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, client_async};
+
+    /// A real WebSocket pair over loopback TCP: the client half is exactly the
+    /// `WebSocket` production speaks, the server half is the hostile peer.
+    async fn connected_pair() -> (WebSocket, WebSocketStream<TcpStream>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("accept");
+            accept_async(tcp).await.expect("server handshake")
+        });
+
+        let tcp = TcpStream::connect(addr).await.expect("connect");
+        let (client, _response) =
+            client_async(format!("ws://{addr}/ws"), MaybeTlsStream::Plain(tcp))
+                .await
+                .expect("client handshake");
+
+        (client, server.await.expect("server task"))
+    }
+
+    /// Reads the peer's `RequestBlock`, answers it with `block`, and yields the
+    /// height that was actually asked for.
+    async fn answer_block_request(
+        server: &mut WebSocketStream<TcpStream>,
+        block: FullBlock,
+    ) -> u32 {
+        let raw = server.next().await.expect("a request").expect("a frame");
+        let WsMessage::Binary(bytes) = raw else {
+            panic!("expected a binary request, got {raw:?}");
+        };
+        let requested = RequestBlock::from_bytes(
+            &chia_protocol::Message::from_bytes(&bytes)
+                .expect("request message")
+                .data,
+        )
+        .expect("RequestBlock")
+        .height;
+
+        let response = chia_protocol::Message {
+            msg_type: ProtocolMessageTypes::RespondBlock,
+            id: Some(1),
+            data: RespondBlock { block }
+                .to_bytes()
+                .expect("RespondBlock")
+                .into(),
+        };
+        server
+            .send(WsMessage::Binary(response.to_bytes().expect("message")))
+            .await
+            .expect("send response");
+
+        requested
+    }
+
+    fn peer() -> PeerConnection {
+        PeerConnection::new("127.0.0.1".to_string(), 8444, "mainnet".to_string())
+    }
+
+    /// The guard has to be *wired in*. A peer answering a request for a height
+    /// far ahead of the chain with long-final block 1 must fail the request as
+    /// a protocol error, through the real request path.
+    #[tokio::test]
+    async fn a_wrong_height_answer_is_rejected_through_the_socket() {
+        let (mut client, mut server) = connected_pair().await;
+        let hostile = tokio::spawn(async move {
+            answer_block_request(&mut server, block_at_height(1)).await;
+            server
+        });
+
+        let error = peer()
+            .request_block_by_height(10_000_000, &mut client)
+            .await
+            .expect_err("block 1 must not answer a request for height 10_000_000");
+
+        assert!(error.to_string().contains(BLOCK_HEIGHT_MISMATCH), "{error}");
+        hostile.await.expect("hostile peer task");
+    }
+
+    /// The control the rejection above needs: an honest answer still succeeds,
+    /// so the seam test cannot pass by failing every request.
+    #[tokio::test]
+    async fn a_matching_answer_is_accepted_through_the_socket() {
+        let (mut client, mut server) = connected_pair().await;
+        let hostile = tokio::spawn(async move {
+            answer_block_request(&mut server, block_at_height(7_654_321)).await
+        });
+
+        let block = peer()
+            .request_block_by_height(7_654_321, &mut client)
+            .await
+            .expect("an honest answer must satisfy the request");
+
+        assert_eq!(block.reward_chain_block.height, 7_654_321);
+        assert_eq!(hostile.await.expect("hostile peer task"), 7_654_321);
+    }
+
+    /// `RequestBlock` carries a `u32`, so a height that does not fit has no
+    /// representation on the wire. Truncating it instead of rejecting it would
+    /// ask for `height % 2^32` and then reject every honest answer as a
+    /// mismatch -- evicting honest peers for answering correctly. Unreachable
+    /// through the napi surface, which takes a `u32`; reachable from the Rust
+    /// API.
+    #[tokio::test]
+    async fn a_height_above_the_protocol_maximum_is_rejected_before_the_wire() {
+        let (mut client, mut server) = connected_pair().await;
+        let too_high = u64::from(u32::MAX) + 1;
+
+        // Bounded: without the guard the truncated height goes on the wire and
+        // this call blocks forever waiting for an answer nobody will send, so
+        // the timeout is what turns that regression into a failure rather than
+        // a hung suite.
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            peer().request_block_by_height(too_high, &mut client),
+        )
+        .await
+        .expect("the height must be rejected without waiting on the peer")
+        .expect_err("a height with no wire representation must not be requested");
+
+        assert!(error.to_string().contains(&too_high.to_string()), "{error}");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), server.next())
+                .await
+                .is_err(),
+            "the request reached the peer instead of being rejected up front"
+        );
+    }
+
+    /// The bound pinned from the other side: the largest representable height
+    /// is requested verbatim, not rejected and not truncated.
+    #[tokio::test]
+    async fn the_largest_representable_height_is_requested_verbatim() {
+        let (mut client, mut server) = connected_pair().await;
+        let hostile = tokio::spawn(async move {
+            answer_block_request(&mut server, block_at_height(u32::MAX)).await
+        });
+
+        let block = peer()
+            .request_block_by_height(u64::from(u32::MAX), &mut client)
+            .await
+            .expect("the largest representable height must be requestable");
+
+        assert_eq!(block.reward_chain_block.height, u32::MAX);
+        assert_eq!(hostile.await.expect("hostile peer task"), u32::MAX);
+    }
+
+    /// The handshake's rendering is wired in too: a hostile `network_id`
+    /// reaches the error message only through `describe_peer_string`, so the
+    /// escaping and the bound hold on the real path.
+    #[tokio::test]
+    async fn a_hostile_network_id_is_escaped_through_the_handshake() {
+        let (mut client, mut server) = connected_pair().await;
+        let hostile_id = format!("wrongnet\r\nERROR forged{}", "A".repeat(10_000));
+
+        let hostile = tokio::spawn(async move {
+            let _ours = server.next().await.expect("our handshake").expect("frame");
+            let handshake = ChiaHandshake {
+                network_id: hostile_id,
+                protocol_version: "0.0.37".to_string(),
+                software_version: "1.0.0".to_string(),
+                server_port: 8444,
+                node_type: NodeType::FullNode,
+                capabilities: vec![],
+            };
+            let message = chia_protocol::Message {
+                msg_type: ProtocolMessageTypes::Handshake,
+                id: None,
+                data: handshake.to_bytes().expect("handshake").into(),
+            };
+            server
+                .send(WsMessage::Binary(message.to_bytes().expect("message")))
+                .await
+                .expect("send handshake");
+            server
+        });
+
+        let error = peer()
+            .handshake(&mut client)
+            .await
+            .expect_err("a mismatched network id must fail the handshake");
+
+        let message = error.to_string();
+        assert!(!message.contains('\n'), "{message}");
+        assert!(!message.contains('\r'), "{message}");
+        assert!(
+            message.len() < 256,
+            "a peer chose {} bytes of error message",
+            message.len()
+        );
+        hostile.await.expect("hostile peer task");
+    }
+
+    /// The bound `describe_peer_string` enforces is in *characters*, and `{:?}`
+    /// expands a non-printable character to a `\u{...}` escape -- so the byte
+    /// length of the rendering is several times the character count.
+    /// `peer_strings_are_escaped_and_bounded` asserts `< 128` bytes only
+    /// because its input is ASCII; this pins what the bound really costs, so
+    /// neither the doc nor that test can be read as promising a byte bound.
+    #[test]
+    fn the_peer_string_bound_is_in_characters_not_bytes() {
+        let rendered = describe_peer_string(&"\u{10fffe}".repeat(1_000));
+
+        assert!(
+            rendered.len() > 128,
+            "escaping was expected to exceed the ASCII-case byte length: {}",
+            rendered.len()
+        );
+        assert!(
+            rendered.len() <= MAX_PEER_STRING_RENDERED_BYTES,
+            "a peer chose {} bytes of log line",
+            rendered.len()
+        );
     }
 }
