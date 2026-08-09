@@ -25,6 +25,11 @@ serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1"
 thiserror = "1.0"
 
+[dev-dependencies]
+# Test-only: an independent source of the Chia L1 mainnet genesis, used to pin
+# upstream TEST_CONSTANTS (tests/mainnet_constants_pin.rs). Not a runtime dep.
+dig-constants = "0.10"
+
 [features]
 default = []
 python-compat = [] 
