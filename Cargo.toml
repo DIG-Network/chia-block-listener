@@ -1,6 +1,6 @@
 [package]
 name = "chia-block-listener"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "Event driven listener and messaging interface for Chia blockchain peers"
 license = "Apache-2.0" # or "MIT" / "MIT OR Apache-2.0" etc.
@@ -15,7 +15,11 @@ tokio-util = "0.7"
 # Chia-related dependencies
 chia-protocol = "0.36.1"
 chia-traits = "0.36.1"
-chia-ssl = "0.36.1"
+# chia-ssl's ceiling is 0.42.1, NOT 0.36.1 — it is the one chia-* family whose version the
+# wallet SDK pins ABOVE the 0.36 line the primitives sit on. The families are not uniform, so
+# "match chia-protocol" is the wrong rule here; dig-peer-protocol (0.42.1) and chia-query (0.42)
+# already declare it at this line, which is what makes 0.42.1 the ecosystem-consistent answer.
+chia-ssl = "0.42.1"
 
 # Networking
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
@@ -43,6 +47,9 @@ serde_json = "1"
 # `Arbitrary` impl rather than hand-assembling a fixture that proves nothing.
 arbitrary = "1"
 chia-protocol = { version = "0.36.1", features = ["arbitrary"] }
+# Pins the shipped Chia CA trust anchor by digest (tests/chia_ca_anchor.rs). Test-only: consumers
+# never pull a hash implementation for this.
+sha2 = "0.10"
 
 [profile.release]
 lto = true
