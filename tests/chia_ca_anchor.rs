@@ -6,10 +6,19 @@
 //! A trust anchor that can be swapped without anything going red is exactly the constant worth
 //! pinning: this test turns an invisible substitution into a red build that a human must approve.
 //!
-//! Upstream rotated this CA. chia-ssl 0.36.1 shipped the 2021 certificate (valid to 2031); 0.42.1
-//! ships a re-issue generated 2025-11-19 and valid to 2037, same subject and issuer
-//! (`O=Chia, CN=Chia CA, OU=Organic Farming Division`) but a different key and fingerprint. This
-//! crate now rides the re-issue. A future rotation SHOULD fail here and be updated deliberately.
+//! Upstream RE-ISSUED this CA; it did NOT rotate the key. chia-ssl 0.36.1 shipped the 2021
+//! certificate (valid to 2031), 0.42.1 ships a re-issue generated 2025-11-19 and valid to 2037.
+//! Decoded, the two certificates carry an **identical SPKI, RSA modulus, serial and subject**
+//! (`O=Chia, CN=Chia CA, OU=Organic Farming Division`); only the validity dates, the SKI/AKI
+//! extensions and therefore the fingerprint differ.
+//!
+//! That distinction is the whole point of reading this comment: a re-issue of the same keypair
+//! introduces no new authority to vet and cannot split interop with peers still on the old cert,
+//! whereas a genuine key rotation would do both. Stating it as a rotation would be a false security
+//! claim committed to the repo, which is worse than saying nothing.
+//!
+//! The digest pin below is still worth having, and for an unchanged reason: it makes ANY future
+//! substitution — re-issue or true rotation — go red and require a human to look at which one it is.
 
 use chia_ssl::CHIA_CA_CRT;
 use sha2::{Digest, Sha256};
